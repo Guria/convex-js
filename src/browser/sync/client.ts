@@ -32,6 +32,7 @@ import {
   MutationRequest,
   QueryId,
   QueryJournal,
+  QuerySetModification,
   ServerMessage,
   RequestId,
   TS,
@@ -270,6 +271,8 @@ export class BaseConvexClient {
   private _nextRequestId: RequestId;
   private _onTransitionFns: Map<number, (transition: Transition) => void> =
     new Map();
+  // Query set edits made in the current microtask, sent as one message.
+  private pendingQuerySetModification: QuerySetModification | null = null;
   private readonly _sessionId: string;
   private firstMessageReceived = false;
   private readonly debug: boolean;
@@ -352,6 +355,7 @@ export class BaseConvexClient {
     // this synchronously, the callback wouldn't work) so the initial
     // pause for expectAuth we call it at the end of this constructor.
     const pauseSocket = () => {
+      this.flushQuerySetModification();
       this.webSocketManager.pause();
       this.state.pause();
     };
@@ -434,6 +438,8 @@ export class BaseConvexClient {
             (queryId) => this.state.queryPath(queryId),
             this.logger,
           );
+          // `restart()` resends the whole query set.
+          this.pendingQuerySetModification = null;
           const [querySetModification, authModification] = this.state.restart();
           if (authModification) {
             this.webSocketManager.sendMessage(authModification);
@@ -720,17 +726,49 @@ export class BaseConvexClient {
       options?.componentPath,
     );
     if (modification !== null) {
-      this.webSocketManager.sendMessage(modification);
+      this.sendQuerySetModification(modification);
     }
     return {
       queryToken,
       unsubscribe: () => {
         const modification = unsubscribe();
         if (modification) {
-          this.webSocketManager.sendMessage(modification);
+          this.sendQuerySetModification(modification);
         }
       },
     };
+  }
+
+  /**
+   * Merge the query set edits of one microtask into one `ModifyQuerySet`.
+   * `LocalSyncState` numbers unpaused edits consecutively, so the merged
+   * message spans the first base version to the last new version. Edits made
+   * while paused go out unbatched; `LocalSyncState` holds them for `resume()`.
+   */
+  private sendQuerySetModification(modification: QuerySetModification) {
+    if (this.state.isPaused()) {
+      this.webSocketManager.sendMessage(modification);
+      return;
+    }
+    const pending = this.pendingQuerySetModification;
+    if (pending !== null) {
+      pending.newVersion = modification.newVersion;
+      pending.modifications.push(...modification.modifications);
+      return;
+    }
+    this.pendingQuerySetModification = {
+      ...modification,
+      modifications: [...modification.modifications],
+    };
+    void Promise.resolve().then(() => this.flushQuerySetModification());
+  }
+
+  private flushQuerySetModification() {
+    const pending = this.pendingQuerySetModification;
+    if (pending !== null) {
+      this.pendingQuerySetModification = null;
+      this.webSocketManager.sendMessage(pending);
+    }
   }
 
   /**
