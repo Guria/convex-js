@@ -25,6 +25,7 @@ import {
   QueryToken,
   serializedQueryTokenIsPaginated,
 } from "./sync/udf_path_utils.js";
+import { action, atom, Atom, bind, context, Frame } from "./sync/reatom.js";
 
 // In Node.js builds this points to a bundled WebSocket implementation. If no
 // WebSocket implementation is manually specified or globally available,
@@ -91,13 +92,15 @@ export class ConvexClient {
   private callNewListenersWithCurrentValuesTimer:
     | ReturnType<typeof setTimeout>
     | undefined;
-  private _closed: boolean;
+  private readonly root: Frame;
+  private readonly _closed: Atom<boolean>;
   private _disabled: boolean;
+  private readonly closeAction: () => Promise<void>;
   /**
    * Once closed no registered callbacks will fire again.
    */
   get closed(): boolean {
-    return this._closed;
+    return this.root.run(() => this._closed());
   }
   get client(): BaseConvexClient {
     if (this._client) return this._client;
@@ -124,8 +127,22 @@ export class ConvexClient {
       validateDeploymentUrl(address);
     }
     const { disabled, ...baseOptions } = options;
-    this._closed = false;
+    const root = (this.root = context());
+    this._closed = atom(false, "convexClient.closed");
     this._disabled = !!disabled;
+    this.closeAction = bind(
+      action(async () => {
+        if (this.disabled) return;
+        // prevent pending updates
+        this.listeners.clear();
+        this._closed.set(true);
+        if (this._paginatedClient) {
+          this._paginatedClient = undefined;
+        }
+        return this.client.close();
+      }, "convexClient.close"),
+      root,
+    );
     if (
       defaultWebSocketConstructor &&
       !("webSocketConstructor" in baseOptions) &&
@@ -375,14 +392,7 @@ export class ConvexClient {
   }
 
   async close() {
-    if (this.disabled) return;
-    // prevent pending updates
-    this.listeners.clear();
-    this._closed = true;
-    if (this._paginatedClient) {
-      this._paginatedClient = undefined;
-    }
-    return this.client.close();
+    return this.closeAction();
   }
 
   /**
