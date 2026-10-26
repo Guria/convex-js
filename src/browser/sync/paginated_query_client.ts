@@ -287,7 +287,6 @@ export class PaginatedQueryClient {
   }
 
   private onBaseTransition(transition: Transition) {
-    this.lastTransitionTs.set(transition.timestamp);
     const changed = this.queriesContainingTokens(
       transition.queries.map((q) => q.token),
     );
