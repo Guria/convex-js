@@ -270,8 +270,6 @@ export function reatomOptimisticQueryResults({
     /**
      * "Raw" with respect to errors vs values, but query results still have
      * optimistic updates applied.
-     *
-     * @internal
      */
     rawQueryResult(queryToken: QueryToken): FunctionResult | undefined {
       return local.entries.get(queryToken)?.result();
@@ -306,9 +304,6 @@ export function reatomOptimisticQueryResults({
       return local.entries.get(queryToken)?.present ?? false;
     },
 
-    /**
-     * @internal
-     */
     queryLogs(queryToken: QueryToken): string[] | undefined {
       return local.entries.get(queryToken)?.result()?.logLines;
     },
