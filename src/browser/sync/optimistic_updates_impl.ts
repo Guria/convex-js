@@ -10,8 +10,10 @@ import { parseArgs } from "../../common/index.js";
 import { Value } from "../../values/index.js";
 import { createHybridErrorStacktrace, forwardData } from "../logging.js";
 import { FunctionResult } from "./function_result.js";
+import { LocalSyncState, QueryEntry } from "./local_state.js";
 import { OptimisticLocalStore } from "./optimistic_updates.js";
 import { RequestId } from "./protocol.js";
+import { atom } from "./reatom.js";
 import {
   canonicalizeUdfPath,
   QueryToken,
@@ -24,21 +26,42 @@ import { ConvexError } from "../../values/errors.js";
  */
 type WrappedOptimisticUpdate = (locaQueryStore: OptimisticLocalStore) => void;
 
+type OptimisticUpdateAndId = {
+  update: WrappedOptimisticUpdate;
+  mutationId: RequestId;
+};
+
+/** Results set by optimistic updates, by query. */
+type Overlay = Map<QueryToken, FunctionResult | undefined>;
+
+// If the query is an error state, just return `undefined` as though
+// it's loading. Optimistic updates should already handle `undefined` well
+// and there isn't a need to break the whole update because it tried
+// to load a single query that errored.
+function queryValue(result: FunctionResult | undefined): Value | undefined {
+  return result?.success ? result.value : undefined;
+}
+
 /**
- * The implementation of `OptimisticLocalStore`.
- *
- * This class provides the interface for optimistic updates to modify query results.
+ * The implementation of `OptimisticLocalStore`: reads `overlay` over `base`,
+ * writes into `overlay` and records the queries it sets.
  */
 class OptimisticLocalStoreImpl implements OptimisticLocalStore {
-  // A references of the query results in OptimisticQueryResults
-  private readonly queryResults: QueryResultsMap;
+  readonly modifiedQueries: QueryToken[] = [];
 
-  // All of the queries modified by this class
-  readonly modifiedQueries: QueryToken[];
+  constructor(
+    private readonly local: LocalSyncState,
+    private readonly overlay: Overlay,
+    /** The result of `entry` without the overlay, or `null` if it has none. */
+    private readonly base: (
+      entry: QueryEntry,
+    ) => { result: FunctionResult | undefined } | null,
+  ) {}
 
-  constructor(queryResults: QueryResultsMap) {
-    this.queryResults = queryResults;
-    this.modifiedQueries = [];
+  private read(entry: QueryEntry) {
+    return this.overlay.has(entry.token)
+      ? { result: this.overlay.get(entry.token) }
+      : this.base(entry);
   }
 
   getQuery<
@@ -50,14 +73,11 @@ class OptimisticLocalStoreImpl implements OptimisticLocalStore {
     ...args: OptionalRestArgs<Query>
   ): undefined | FunctionReturnType<Query> {
     const queryArgs = parseArgs(args[0]);
-    const name = getFunctionName(query);
-    const queryResult = this.queryResults.get(
-      serializePathAndArgs(name, queryArgs),
+    const entry = this.local.entries.get(
+      serializePathAndArgs(getFunctionName(query), queryArgs),
     );
-    if (queryResult === undefined) {
-      return undefined;
-    }
-    return OptimisticLocalStoreImpl.queryValue(queryResult.result);
+    const found = entry === undefined ? null : this.read(entry);
+    return found === null ? undefined : queryValue(found.result);
   }
 
   getAllQueries<
@@ -74,14 +94,15 @@ class OptimisticLocalStoreImpl implements OptimisticLocalStore {
       args: FunctionArgs<Query>;
       value: undefined | FunctionReturnType<Query>;
     }[] = [];
-    const name = getFunctionName(query);
-    for (const queryResult of this.queryResults.values()) {
-      if (queryResult.udfPath === canonicalizeUdfPath(name)) {
-        queriesWithName.push({
-          args: queryResult.args as FunctionArgs<Query>,
-          value: OptimisticLocalStoreImpl.queryValue(queryResult.result),
-        });
-      }
+    const udfPath = canonicalizeUdfPath(getFunctionName(query));
+    for (const entry of this.local.entries.values()) {
+      if (entry.udfPath !== udfPath) continue;
+      const found = this.read(entry);
+      if (found === null) continue;
+      queriesWithName.push({
+        args: entry.args as FunctionArgs<Query>,
+        value: queryValue(found.result),
+      });
     }
     return queriesWithName;
   }
@@ -96,172 +117,204 @@ class OptimisticLocalStoreImpl implements OptimisticLocalStore {
     value: undefined | FunctionReturnType<QueryReference>,
   ): void {
     const queryArgs = parseArgs(args);
-    const name = getFunctionName(queryReference);
-    const queryToken = serializePathAndArgs(name, queryArgs);
-
-    let result: FunctionResult | undefined;
-    if (value === undefined) {
-      result = undefined;
-    } else {
-      result = {
-        success: true,
-        value,
-        // It's an optimistic update, so there are no function logs to show.
-        logLines: [],
-      };
-    }
-    const query: Query = {
-      udfPath: name,
-      args: queryArgs,
-      result,
-    };
-    this.queryResults.set(queryToken, query);
-    this.modifiedQueries.push(queryToken);
-  }
-
-  private static queryValue(
-    result: FunctionResult | undefined,
-  ): Value | undefined {
-    if (result === undefined) {
-      return undefined;
-    } else if (result.success) {
-      return result.value;
-    } else {
-      // If the query is an error state, just return `undefined` as though
-      // it's loading. Optimistic updates should already handle `undefined` well
-      // and there isn't a need to break the whole update because it tried
-      // to load a single query that errored.
-      return undefined;
-    }
+    const entry = this.local.entry(getFunctionName(queryReference), queryArgs);
+    this.overlay.set(
+      entry.token,
+      value === undefined
+        ? undefined
+        : // It's an optimistic update, so there are no function logs to show.
+          { success: true, value, logLines: [] },
+    );
+    this.modifiedQueries.push(entry.token);
   }
 }
-
-type OptimisticUpdateAndId = {
-  update: WrappedOptimisticUpdate;
-  mutationId: RequestId;
-};
-
-type Query = {
-  // undefined means the query was set to be loading (undefined) in an optimistic update.
-  // Note that we can also have queries not present in the QueryResultMap
-  // at all because they are still loading from the server and have no optimistic update
-  // setting an optimistic value in advance.
-  result: FunctionResult | undefined;
-  udfPath: string;
-  args: Record<string, Value>;
-};
-export type QueryResultsMap = Map<QueryToken, Query>;
-
-type ChangedQueries = QueryToken[];
 
 /**
  * A view of all of our query results with optimistic updates applied on top.
+ *
+ * Without optimistic updates to replay, a server transition changes only the
+ * queries it names, plus the ones that left the query set since the last
+ * one. With optimistic updates pending, or on the first transition after a
+ * reconnect, every result is recomputed and the updates are replayed.
  */
-export class OptimisticQueryResults {
-  private queryResults: QueryResultsMap;
-  private optimisticUpdates: OptimisticUpdateAndId[];
+export function reatomOptimisticQueryResults({
+  local,
+  name,
+}: {
+  local: LocalSyncState;
+  name: string;
+}) {
+  const optimisticUpdates = atom<readonly OptimisticUpdateAndId[]>(
+    [],
+    `${name}.optimisticUpdates`,
+  );
+  const overlay = atom<ReadonlyMap<QueryToken, FunctionResult | undefined>>(
+    new Map(),
+    `${name}.overlay`,
+  );
 
-  constructor() {
-    this.queryResults = new Map();
-    this.optimisticUpdates = [];
-  }
+  /** Shows `result`; records the token if it is part of a transition. */
+  const settle = (
+    entry: QueryEntry,
+    result: FunctionResult | undefined,
+    present: boolean,
+    changed: QueryToken[],
+  ) => {
+    const old = entry.result();
+    if (old !== result) entry.result.set(result);
+    if (present && (!entry.present || old !== result))
+      changed.push(entry.token);
+    entry.present = present;
+  };
 
-  /**
-   * Apply all optimistic updates on top of server query results
-   */
-  ingestQueryResultsFromServer(
-    serverQueryResults: QueryResultsMap,
-    optimisticUpdatesToDrop: Set<RequestId>,
-  ): ChangedQueries {
-    this.optimisticUpdates = this.optimisticUpdates.filter((updateAndId) => {
-      return !optimisticUpdatesToDrop.has(updateAndId.mutationId);
-    });
+  const serverOf = (entry: QueryEntry) =>
+    entry.subscribers > 0 ? entry.serverResult : undefined;
 
-    const oldQueryResults = this.queryResults;
-    this.queryResults = new Map(serverQueryResults);
-    const localStore = new OptimisticLocalStoreImpl(this.queryResults);
-    for (const updateAndId of this.optimisticUpdates) {
-      updateAndId.update(localStore);
+  /** Drops entries nothing refers to anymore. */
+  const collect = (
+    entry: QueryEntry,
+    current: ReadonlyMap<QueryToken, any>,
+  ) => {
+    if (
+      entry.subscribers === 0 &&
+      entry.id === null &&
+      !current.has(entry.token)
+    ) {
+      local.entries.delete(entry.token);
     }
+  };
 
-    // To find the changed queries, just do a shallow comparison
-    // TODO(CX-733): Change this so we avoid unnecessary rerenders
-    const changedQueries: ChangedQueries = [];
-    for (const [queryToken, query] of this.queryResults) {
-      const oldQuery = oldQueryResults.get(queryToken);
-      if (oldQuery === undefined || oldQuery.result !== query.result) {
-        changedQueries.push(queryToken);
+  return {
+    optimisticUpdates,
+    overlay,
+
+    /**
+     * Shows the server results of `named` (or of every query when `full`)
+     * under the optimistic updates still pending, and drops the updates of
+     * `optimisticUpdatesToDrop`.
+     *
+     * @returns The tokens of queries whose result changed.
+     */
+    ingestQueryResultsFromServer(
+      named: QueryEntry[],
+      optimisticUpdatesToDrop: Set<RequestId>,
+      forceFull: boolean,
+    ): QueryToken[] {
+      const updates = optimisticUpdates();
+      const changed: QueryToken[] = [];
+      if (!forceFull && updates.length === 0 && overlay().size === 0) {
+        for (const entry of named) {
+          const result = serverOf(entry);
+          settle(entry, result, result !== undefined, changed);
+        }
+        for (const entry of local.retired) {
+          const result = serverOf(entry);
+          settle(entry, result, result !== undefined, changed);
+          collect(entry, overlay());
+        }
+        local.retired.clear();
+        return changed;
       }
-    }
 
-    return changedQueries;
-  }
+      const remaining =
+        optimisticUpdatesToDrop.size === 0
+          ? updates
+          : optimisticUpdates.set(
+              updates.filter(
+                (update) => !optimisticUpdatesToDrop.has(update.mutationId),
+              ),
+            );
+      const next: Overlay = new Map();
+      const store = new OptimisticLocalStoreImpl(local, next, (entry) => {
+        const result = serverOf(entry);
+        return result === undefined ? null : { result };
+      });
+      for (const { update } of remaining) {
+        update(store);
+      }
+      overlay.set(next);
+      local.retired.clear();
+      for (const entry of local.entries.values()) {
+        if (next.has(entry.token)) {
+          settle(entry, next.get(entry.token), true, changed);
+        } else {
+          const result = serverOf(entry);
+          settle(entry, result, result !== undefined, changed);
+          collect(entry, next);
+        }
+      }
+      return changed;
+    },
 
-  applyOptimisticUpdate(
-    update: WrappedOptimisticUpdate,
-    mutationId: RequestId,
-  ): ChangedQueries {
-    // Apply the update to our store
-    this.optimisticUpdates.push({
-      update,
-      mutationId,
-    });
-    const localStore = new OptimisticLocalStoreImpl(this.queryResults);
-    update(localStore);
+    /** @returns The tokens of the queries the update set. */
+    applyOptimisticUpdate(
+      update: WrappedOptimisticUpdate,
+      mutationId: RequestId,
+    ): QueryToken[] {
+      optimisticUpdates.set((updates) => [...updates, { update, mutationId }]);
+      const next: Overlay = new Map(overlay());
+      const store = new OptimisticLocalStoreImpl(local, next, (entry) =>
+        entry.present ? { result: entry.result() } : null,
+      );
+      update(store);
+      overlay.set(next);
+      for (const token of store.modifiedQueries) {
+        const entry = local.entries.get(token)!;
+        const result = next.get(token);
+        if (entry.result() !== result) entry.result.set(result);
+        entry.present = true;
+      }
+      return store.modifiedQueries;
+    },
 
-    // Notify about any query results that changed
-    // TODO(CX-733): Change this so we avoid unnecessary rerenders
-    return localStore.modifiedQueries;
-  }
+    /**
+     * "Raw" with respect to errors vs values, but query results still have
+     * optimistic updates applied.
+     *
+     * @internal
+     */
+    rawQueryResult(queryToken: QueryToken): FunctionResult | undefined {
+      return local.entries.get(queryToken)?.result();
+    },
 
-  /**
-   * "Raw" with respect to errors vs values, but query results still have
-   * optimistic updates applied.
-   *
-   * @internal
-   */
-  rawQueryResult(queryToken: QueryToken): FunctionResult | undefined {
-    const query = this.queryResults.get(queryToken);
-    if (query === undefined) {
-      return undefined;
-    }
-    return query.result;
-  }
-
-  queryResult(queryToken: QueryToken): Value | undefined {
-    const query = this.queryResults.get(queryToken);
-    if (query === undefined) {
-      return undefined;
-    }
-    const result = query.result;
-    if (result === undefined) {
-      return undefined;
-    } else if (result.success) {
-      return result.value;
-    } else {
-      if (result.errorData !== undefined) {
-        throw forwardData(
-          result,
-          new ConvexError(
-            createHybridErrorStacktrace("query", query.udfPath, result),
-          ),
+    queryResult(queryToken: QueryToken): Value | undefined {
+      const entry = local.entries.get(queryToken);
+      if (entry === undefined) {
+        return undefined;
+      }
+      const result = entry.result();
+      if (result === undefined) {
+        return undefined;
+      } else if (result.success) {
+        return result.value;
+      } else {
+        if (result.errorData !== undefined) {
+          throw forwardData(
+            result,
+            new ConvexError(
+              createHybridErrorStacktrace("query", entry.udfPath, result),
+            ),
+          );
+        }
+        throw new Error(
+          createHybridErrorStacktrace("query", entry.udfPath, result),
         );
       }
-      throw new Error(
-        createHybridErrorStacktrace("query", query.udfPath, result),
-      );
-    }
-  }
+    },
 
-  hasQueryResult(queryToken: QueryToken): boolean {
-    return this.queryResults.get(queryToken) !== undefined;
-  }
+    hasQueryResult(queryToken: QueryToken): boolean {
+      return local.entries.get(queryToken)?.present ?? false;
+    },
 
-  /**
-   * @internal
-   */
-  queryLogs(queryToken: QueryToken): string[] | undefined {
-    const query = this.queryResults.get(queryToken);
-    return query?.result?.logLines;
-  }
+    /**
+     * @internal
+     */
+    queryLogs(queryToken: QueryToken): string[] | undefined {
+      return local.entries.get(queryToken)?.result()?.logLines;
+    },
+  };
 }
+
+export type OptimisticQueryResults = ReturnType<
+  typeof reatomOptimisticQueryResults
+>;

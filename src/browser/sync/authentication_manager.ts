@@ -1,6 +1,7 @@
 import { Logger } from "../logging.js";
 import { LocalSyncState } from "./local_state.js";
 import { AuthError, IdentityVersion, Transition } from "./protocol.js";
+import { action, atom, bind, Frame, wrap } from "./reatom.js";
 import { jwtDecode } from "../../vendor/jwt-decode/index.js";
 
 // setTimout uses 32 bit integer, so it can only
@@ -83,321 +84,213 @@ type AuthState =
  * Handles the state transitions for auth. The server is the source
  * of truth.
  */
-export class AuthenticationManager {
-  private authState: AuthState = { state: "noAuth" };
+export function reatomAuthenticationManager({
+  syncState,
+  callbacks,
+  config: { logger, refreshTokenLeewaySeconds, initialAuthTokenReuse },
+  root,
+  name,
+}: {
+  // Shared by the BaseClient so that the auth manager can easily inspect it
+  syncState: LocalSyncState;
+  callbacks: {
+    // Sends a message to the server
+    authenticate: (token: string) => IdentityVersion;
+    stopSocket: () => Promise<void>;
+    tryRestartSocket: () => void;
+    pauseSocket: () => void;
+    resumeSocket: () => void;
+    // Sends a message to the server
+    clearAuth: () => void;
+  };
+  config: {
+    refreshTokenLeewaySeconds: number;
+    logger: Logger;
+    initialAuthTokenReuse: boolean;
+  };
+  root: Frame;
+  name: string;
+}) {
+  const authState = atom<AuthState>({ state: "noAuth" }, `${name}.authState`);
   // Used to detect races involving `setConfig` calls
   // while a token is being fetched.
-  private configVersion = 0;
-  // Shared by the BaseClient so that the auth manager can easily inspect it
-  private readonly syncState: LocalSyncState;
-  // Passed down by BaseClient, sends a message to the server
-  private readonly authenticate: (token: string) => IdentityVersion;
-  private readonly stopSocket: () => Promise<void>;
-  private readonly tryRestartSocket: () => void;
-  private readonly pauseSocket: () => void;
-  private readonly resumeSocket: () => void;
-  // Passed down by BaseClient, sends a message to the server
-  private readonly clearAuth: () => void;
-  private readonly logger: Logger;
-  private readonly refreshTokenLeewaySeconds: number;
-  private readonly initialAuthTokenReuse: boolean;
+  const configVersion = atom(0, `${name}.configVersion`);
   // Track last value to avoid redundant calls
-  private lastRefreshChange: boolean;
+  const lastRefreshChange = atom(false, `${name}.lastRefreshChange`);
   // Number of times we have attempted to confirm the latest token. We retry up
   // to `MAX_TOKEN_CONFIRMATION_ATTEMPTS` times.
-  private tokenConfirmationAttempts = 0;
-  constructor(
-    syncState: LocalSyncState,
-    callbacks: {
-      authenticate: (token: string) => IdentityVersion;
-      stopSocket: () => Promise<void>;
-      tryRestartSocket: () => void;
-      pauseSocket: () => void;
-      resumeSocket: () => void;
-      clearAuth: () => void;
-    },
-    config: {
-      refreshTokenLeewaySeconds: number;
-      logger: Logger;
-      initialAuthTokenReuse: boolean;
-    },
-  ) {
-    this.syncState = syncState;
-    this.authenticate = callbacks.authenticate;
-    this.stopSocket = callbacks.stopSocket;
-    this.tryRestartSocket = callbacks.tryRestartSocket;
-    this.pauseSocket = callbacks.pauseSocket;
-    this.resumeSocket = callbacks.resumeSocket;
-    this.clearAuth = callbacks.clearAuth;
-    this.logger = config.logger;
-    this.refreshTokenLeewaySeconds = config.refreshTokenLeewaySeconds;
-    this.initialAuthTokenReuse = config.initialAuthTokenReuse;
-    this.lastRefreshChange = false;
-  }
+  const tokenConfirmationAttempts = atom(
+    0,
+    `${name}.tokenConfirmationAttempts`,
+  );
 
-  private notifyRefreshChange(isRefreshing: boolean) {
+  const logVerbose = (message: string) =>
+    logger.logVerbose(`${message} [v${configVersion()}]`);
+
+  const notifyRefreshChange = (isRefreshing: boolean) => {
+    const current = authState();
     if (
-      this.authState.state !== "noAuth" &&
-      this.authState.state !== "initialRefetch" &&
-      this.authState.config.onRefreshChange &&
-      this.lastRefreshChange !== isRefreshing
+      current.state !== "noAuth" &&
+      current.state !== "initialRefetch" &&
+      current.config.onRefreshChange &&
+      lastRefreshChange() !== isRefreshing
     ) {
-      this.lastRefreshChange = isRefreshing;
-      this.authState.config.onRefreshChange(isRefreshing);
+      lastRefreshChange.set(isRefreshing);
+      current.config.onRefreshChange(isRefreshing);
     }
-  }
+  };
 
-  async setConfig(
+  const setAuthState = (newAuth: AuthState) => {
+    const authStateForLog =
+      newAuth.state === "waitingForServerConfirmationOfFreshToken"
+        ? {
+            hadAuth: newAuth.hadAuth,
+            state: newAuth.state,
+            token: `...${newAuth.token.slice(-7)}`,
+          }
+        : { state: newAuth.state };
+    logVerbose(`setting auth state to ${JSON.stringify(authStateForLog)}`);
+    switch (newAuth.state) {
+      case "waitingForScheduledRefetch":
+      case "notRefetching":
+      case "noAuth":
+        tokenConfirmationAttempts.set(0);
+        break;
+      case "waitingForServerConfirmationOfFreshToken":
+      case "waitingForServerConfirmationOfCachedToken":
+      case "initialRefetch":
+        break;
+      default: {
+        newAuth satisfies never;
+      }
+    }
+    const current = authState();
+    if (current.state === "waitingForScheduledRefetch") {
+      clearTimeout(current.refetchTokenTimeoutId);
+    }
+    authState.set(newAuth);
+  };
+
+  // The sole path to `state === "noAuth"`; consumers rely on this firing
+  // `notifyRefreshChange(false)` to pair any in-flight `(true)`. May run
+  // when refresh state is already false.
+  const resetAuthState = () => {
+    notifyRefreshChange(false);
+    setAuthState({ state: "noAuth" });
+  };
+
+  const setAndReportAuthFailed = (
+    onAuthChange: (authenticated: boolean) => void,
+  ) => {
+    onAuthChange(false);
+    resetAuthState();
+  };
+
+  // Protects against simultaneous calls to `setConfig`
+  // while we're fetching a token
+  const fetchTokenAndGuardAgainstRace = async (
     fetchToken: AuthTokenFetcher,
-    onChange: (isAuthenticated: boolean) => void,
-    onRefreshChange?: (isRefreshing: boolean) => void,
-  ) {
-    this.resetAuthState();
-    this._logVerbose("pausing WS for auth token fetch");
-    this.pauseSocket();
-    const token = await this.fetchTokenAndGuardAgainstRace(fetchToken, {
-      forceRefreshToken: false,
-    });
-    if (token.isFromOutdatedConfig) {
-      return;
-    }
-    const config: AuthConfig = {
-      fetchToken,
-      onAuthChange: onChange,
-      onRefreshChange,
-    };
-    if (token.value) {
-      this.setAuthState({
-        state: "waitingForServerConfirmationOfCachedToken",
-        config,
-        hasRetried: false,
-      });
-      this.authenticate(token.value);
-    } else {
-      this.setAuthState({
-        state: "initialRefetch",
-        config,
-      });
-      // Try again with `forceRefreshToken: true`
-      await this.refetchToken();
-    }
-    this._logVerbose("resuming WS after auth token fetch");
-    this.resumeSocket();
-  }
-
-  onTransition(serverMessage: Transition) {
-    if (
-      !this.syncState.isCurrentOrNewerAuthVersion(
-        serverMessage.endVersion.identity,
-      )
-    ) {
-      // This is a stale transition - client has moved on to
-      // a newer auth version.
-      return;
-    }
-    if (
-      serverMessage.endVersion.identity <= serverMessage.startVersion.identity
-    ) {
-      // This transition did not change auth - it is not a response to Authenticate.
-      return;
-    }
-
-    this._logVerbose(
-      `auth state is ${this.authState.state} when handling transition`,
-    );
-
-    // This transition advanced the auth version, which means the token used was valid
-    // and the client and server auth states are in sync.
-    this.syncState.markAuthCompletion();
-
-    if (this.authState.state === "waitingForServerConfirmationOfCachedToken") {
-      this._logVerbose("server confirmed auth token is valid");
-      const cachedToken = this.syncState.getAuth()?.value;
-      if (this.initialAuthTokenReuse && cachedToken) {
-        this.scheduleTokenRefetch(cachedToken, serverMessage.clientClockSkew);
-      } else {
-        void this.refetchToken();
-      }
-      this.authState.config.onAuthChange(true);
-      return;
-    }
-    if (this.authState.state === "waitingForServerConfirmationOfFreshToken") {
-      this._logVerbose("server confirmed new auth token is valid");
-      this.notifyRefreshChange(false);
-      this.scheduleTokenRefetch(this.authState.token);
-      this.tokenConfirmationAttempts = 0;
-      if (!this.authState.hadAuth) {
-        this.authState.config.onAuthChange(true);
-      }
-    }
-  }
-
-  onAuthError(serverMessage: AuthError) {
-    // If the AuthError is not due to updating the token, and we're currently
-    // waiting on the result of a token update, ignore.
-    if (
-      serverMessage.authUpdateAttempted === false &&
-      (this.authState.state === "waitingForServerConfirmationOfFreshToken" ||
-        this.authState.state === "waitingForServerConfirmationOfCachedToken")
-    ) {
-      this._logVerbose("ignoring non-auth token expired error");
-      return;
-    }
-    const { baseVersion } = serverMessage;
-    // Versioned AuthErrors are ignored if the client advanced to
-    // a newer auth identity
-    // Error are reporting the previous version, since the server
-    // didn't advance, hence `+ 1`.
-    if (!this.syncState.isCurrentOrNewerAuthVersion(baseVersion + 1)) {
-      this._logVerbose("ignoring auth error for previous auth attempt");
-      return;
-    }
-    void this.tryToReauthenticate(serverMessage);
-    return;
-  }
-
-  // This is similar to `refetchToken` defined below, in fact we
-  // don't represent them as different states, but it is different
-  // in that we pause the WebSocket so that mutations
-  // don't retry with bad auth.
-  private async tryToReauthenticate(serverMessage: AuthError) {
-    this._logVerbose(`attempting to reauthenticate: ${serverMessage.error}`);
-    if (
-      // No way to fetch another token, kaboom
-      this.authState.state === "noAuth" ||
-      // We failed on a fresh token. After a small number of retries, we give up
-      // and clear the auth state to avoid infinite retries.
-      (this.authState.state === "waitingForServerConfirmationOfFreshToken" &&
-        this.tokenConfirmationAttempts >= MAX_TOKEN_CONFIRMATION_ATTEMPTS)
-    ) {
-      this.logger.error(
-        `Failed to authenticate: "${serverMessage.error}", check your server auth config`,
+    fetchArgs: {
+      forceRefreshToken: boolean;
+    },
+  ) => {
+    const originalConfigVersion = configVersion() + 1;
+    configVersion.set(originalConfigVersion);
+    logVerbose(`fetching token with config version ${originalConfigVersion}`);
+    const token = await wrap(fetchToken(fetchArgs));
+    if (configVersion() !== originalConfigVersion) {
+      // This is a stale config
+      logVerbose(
+        `stale config version, expected ${originalConfigVersion}, got ${configVersion()}`,
       );
-      if (this.syncState.hasAuth()) {
-        this.syncState.clearAuth();
-      }
-      if (this.authState.state !== "noAuth") {
-        this.setAndReportAuthFailed(this.authState.config.onAuthChange);
-      }
-      return;
+      return { isFromOutdatedConfig: true };
     }
-    if (this.authState.state === "waitingForServerConfirmationOfFreshToken") {
-      this.tokenConfirmationAttempts++;
-      this._logVerbose(
-        `retrying reauthentication, ${MAX_TOKEN_CONFIRMATION_ATTEMPTS - this.tokenConfirmationAttempts} attempts remaining`,
+    return { isFromOutdatedConfig: false, value: token };
+  };
+
+  const decodeToken = (token: string) => {
+    try {
+      return jwtDecode(token);
+    } catch (e) {
+      logVerbose(
+        `Error decoding token: ${e instanceof Error ? e.message : "Unknown error"}`,
       );
+      return null;
     }
-
-    this.notifyRefreshChange(true);
-    await this.stopSocket();
-    if ((this.authState.state as AuthState["state"]) === "noAuth") {
-      // setConfig() or stop() ran during the await.
-      return;
-    }
-    const token = await this.fetchTokenAndGuardAgainstRace(
-      this.authState.config.fetchToken,
-      {
-        forceRefreshToken: true,
-      },
-    );
-    if (token.isFromOutdatedConfig) {
-      return;
-    }
-
-    if (token.value && this.syncState.isNewAuth(token.value)) {
-      this.authenticate(token.value);
-      this.setAuthState({
-        state: "waitingForServerConfirmationOfFreshToken",
-        config: this.authState.config,
-        token: token.value,
-        hadAuth:
-          this.authState.state === "notRefetching" ||
-          this.authState.state === "waitingForScheduledRefetch",
-      });
-    } else {
-      this._logVerbose("reauthentication failed, could not fetch a new token");
-      if (this.syncState.hasAuth()) {
-        this.syncState.clearAuth();
-      }
-      this.setAndReportAuthFailed(this.authState.config.onAuthChange);
-    }
-    this.tryRestartSocket();
-  }
+  };
 
   // Force refetch the token and schedule another refetch
   // before the token expires - an active client should never
   // need to reauthenticate.
-  private async refetchToken() {
-    if (this.authState.state === "noAuth") {
+  const refetchToken = action(async () => {
+    const initial = authState();
+    if (initial.state === "noAuth") {
       return;
     }
-    this._logVerbose("refetching auth token");
-    const token = await this.fetchTokenAndGuardAgainstRace(
-      this.authState.config.fetchToken,
-      {
+    logVerbose("refetching auth token");
+    const token = await wrap(
+      fetchTokenAndGuardAgainstRace(initial.config.fetchToken, {
         forceRefreshToken: true,
-      },
+      }),
     );
     if (token.isFromOutdatedConfig) {
       return;
     }
+    const current = authState() as Exclude<AuthState, { state: "noAuth" }>;
 
     if (token.value) {
-      if (this.syncState.isNewAuth(token.value)) {
-        this.setAuthState({
+      if (syncState.isNewAuth(token.value)) {
+        setAuthState({
           state: "waitingForServerConfirmationOfFreshToken",
-          hadAuth: this.syncState.hasAuth(),
+          hadAuth: syncState.hasAuth(),
           token: token.value,
-          config: this.authState.config,
+          config: current.config,
         });
-        this.authenticate(token.value);
+        callbacks.authenticate(token.value);
       } else {
-        this.setAuthState({
+        setAuthState({
           state: "notRefetching",
-          config: this.authState.config,
+          config: current.config,
         });
       }
     } else {
-      this._logVerbose("refetching token failed");
-      if (this.syncState.hasAuth()) {
-        this.clearAuth();
+      logVerbose("refetching token failed");
+      if (syncState.hasAuth()) {
+        callbacks.clearAuth();
       }
-      this.setAndReportAuthFailed(this.authState.config.onAuthChange);
+      setAndReportAuthFailed(current.config.onAuthChange);
     }
     // Restart in case this refetch was triggered via schedule during
     // a reauthentication attempt.
-    this._logVerbose(
-      "restarting WS after auth token fetch (if currently stopped)",
-    );
-    this.tryRestartSocket();
-  }
+    logVerbose("restarting WS after auth token fetch (if currently stopped)");
+    callbacks.tryRestartSocket();
+  }, `${name}.refetchToken`);
 
-  private scheduleTokenRefetch(token: string, clientClockSkewMs?: number) {
-    if (this.authState.state === "noAuth") {
+  const scheduleTokenRefetch = (token: string, clientClockSkewMs?: number) => {
+    const current = authState();
+    if (current.state === "noAuth") {
       return;
     }
-    const decodedToken = this.decodeToken(token);
+    const decodedToken = decodeToken(token);
     if (!decodedToken) {
       // This is no longer really possible, because
       // we wait on server response before scheduling token refetch,
       // and the server currently requires JWT tokens.
-      this.logger.error(
-        "Auth token is not a valid JWT, cannot refetch the token",
-      );
+      logger.error("Auth token is not a valid JWT, cannot refetch the token");
       return;
     }
     // iat: issued at time, UTC seconds timestamp at which the JWT was issued
     // exp: expiration time, UTC seconds timestamp at which the JWT will expire
     const { iat, exp } = decodedToken as { iat?: number; exp?: number };
     if (!iat || !exp) {
-      this.logger.error(
+      logger.error(
         "Auth token does not have required fields, cannot refetch the token",
       );
       return;
     }
     const fullLifetimeSeconds = exp - iat;
     if (fullLifetimeSeconds <= 2) {
-      this.logger.error(
+      logger.error(
         "Auth token does not live long enough, cannot refetch the token",
       );
       return;
@@ -427,120 +320,229 @@ export class AuthenticationManager {
     // or immediately if the token is already expiring soon.
     let delay = Math.min(
       MAXIMUM_REFRESH_DELAY,
-      (tokenValiditySeconds - this.refreshTokenLeewaySeconds) * 1000,
+      (tokenValiditySeconds - refreshTokenLeewaySeconds) * 1000,
     );
     if (delay <= 0) {
       // Refetch immediately, but this might be due to configuring a `refreshTokenLeewaySeconds`
       // that is too large compared to the token's actual lifetime.
-      this.logger.warn(
-        `Refetching auth token immediately, configured leeway ${this.refreshTokenLeewaySeconds}s is larger than the token's lifetime ${tokenValiditySeconds}s`,
+      logger.warn(
+        `Refetching auth token immediately, configured leeway ${refreshTokenLeewaySeconds}s is larger than the token's lifetime ${tokenValiditySeconds}s`,
       );
       delay = 0;
     }
-    const refetchTokenTimeoutId = setTimeout(() => {
-      this._logVerbose("running scheduled token refetch");
-      void this.refetchToken();
-    }, delay);
-    this.setAuthState({
+    const refetchTokenTimeoutId = setTimeout(
+      bind(() => {
+        logVerbose("running scheduled token refetch");
+        void refetchToken();
+      }, root),
+      delay,
+    );
+    setAuthState({
       state: "waitingForScheduledRefetch",
       refetchTokenTimeoutId,
-      config: this.authState.config,
+      config: current.config,
     });
-    this._logVerbose(
-      `scheduled preemptive auth token refetching in ${delay}ms`,
-    );
-  }
+    logVerbose(`scheduled preemptive auth token refetching in ${delay}ms`);
+  };
 
-  // Protects against simultaneous calls to `setConfig`
-  // while we're fetching a token
-  private async fetchTokenAndGuardAgainstRace(
-    fetchToken: AuthTokenFetcher,
-    fetchArgs: {
-      forceRefreshToken: boolean;
-    },
-  ) {
-    const originalConfigVersion = ++this.configVersion;
-    this._logVerbose(
-      `fetching token with config version ${originalConfigVersion}`,
-    );
-    const token = await fetchToken(fetchArgs);
-    if (this.configVersion !== originalConfigVersion) {
-      // This is a stale config
-      this._logVerbose(
-        `stale config version, expected ${originalConfigVersion}, got ${this.configVersion}`,
+  // This is similar to `refetchToken` defined above, in fact we
+  // don't represent them as different states, but it is different
+  // in that we pause the WebSocket so that mutations
+  // don't retry with bad auth.
+  const tryToReauthenticate = action(async (serverMessage: AuthError) => {
+    logVerbose(`attempting to reauthenticate: ${serverMessage.error}`);
+    const initial = authState();
+    if (
+      // No way to fetch another token, kaboom
+      initial.state === "noAuth" ||
+      // We failed on a fresh token. After a small number of retries, we give up
+      // and clear the auth state to avoid infinite retries.
+      (initial.state === "waitingForServerConfirmationOfFreshToken" &&
+        tokenConfirmationAttempts() >= MAX_TOKEN_CONFIRMATION_ATTEMPTS)
+    ) {
+      logger.error(
+        `Failed to authenticate: "${serverMessage.error}", check your server auth config`,
       );
-      return { isFromOutdatedConfig: true };
-    }
-    return { isFromOutdatedConfig: false, value: token };
-  }
-
-  stop() {
-    this.resetAuthState();
-    // Bump this in case we are mid-token-fetch when we get stopped
-    this.configVersion++;
-    this._logVerbose(`config version bumped to ${this.configVersion}`);
-  }
-
-  private setAndReportAuthFailed(
-    onAuthChange: (authenticated: boolean) => void,
-  ) {
-    onAuthChange(false);
-    this.resetAuthState();
-  }
-
-  // The sole path to `state === "noAuth"`; consumers rely on this firing
-  // `notifyRefreshChange(false)` to pair any in-flight `(true)`. May run
-  // when refresh state is already false.
-  private resetAuthState() {
-    this.notifyRefreshChange(false);
-    this.setAuthState({ state: "noAuth" });
-  }
-
-  private setAuthState(newAuth: AuthState) {
-    const authStateForLog =
-      newAuth.state === "waitingForServerConfirmationOfFreshToken"
-        ? {
-            hadAuth: newAuth.hadAuth,
-            state: newAuth.state,
-            token: `...${newAuth.token.slice(-7)}`,
-          }
-        : { state: newAuth.state };
-    this._logVerbose(
-      `setting auth state to ${JSON.stringify(authStateForLog)}`,
-    );
-    switch (newAuth.state) {
-      case "waitingForScheduledRefetch":
-      case "notRefetching":
-      case "noAuth":
-        this.tokenConfirmationAttempts = 0;
-        break;
-      case "waitingForServerConfirmationOfFreshToken":
-      case "waitingForServerConfirmationOfCachedToken":
-      case "initialRefetch":
-        break;
-      default: {
-        newAuth satisfies never;
+      if (syncState.hasAuth()) {
+        syncState.clearAuth();
       }
+      if (initial.state !== "noAuth") {
+        setAndReportAuthFailed(initial.config.onAuthChange);
+      }
+      return;
     }
-    if (this.authState.state === "waitingForScheduledRefetch") {
-      // TODO: this side-effect would be better situated with scheduling refetch
-      clearTimeout(this.authState.refetchTokenTimeoutId);
-    }
-    this.authState = newAuth;
-  }
-
-  private decodeToken(token: string) {
-    try {
-      return jwtDecode(token);
-    } catch (e) {
-      this._logVerbose(
-        `Error decoding token: ${e instanceof Error ? e.message : "Unknown error"}`,
+    if (initial.state === "waitingForServerConfirmationOfFreshToken") {
+      tokenConfirmationAttempts.set((attempts) => attempts + 1);
+      logVerbose(
+        `retrying reauthentication, ${MAX_TOKEN_CONFIRMATION_ATTEMPTS - tokenConfirmationAttempts()} attempts remaining`,
       );
-      return null;
     }
-  }
 
-  private _logVerbose(message: string) {
-    this.logger.logVerbose(`${message} [v${this.configVersion}]`);
-  }
+    notifyRefreshChange(true);
+    await wrap(callbacks.stopSocket());
+    const afterStop = authState();
+    if (afterStop.state === "noAuth") {
+      // setConfig() or stop() ran during the await.
+      return;
+    }
+    const token = await wrap(
+      fetchTokenAndGuardAgainstRace(afterStop.config.fetchToken, {
+        forceRefreshToken: true,
+      }),
+    );
+    if (token.isFromOutdatedConfig) {
+      return;
+    }
+    const current = authState() as Exclude<AuthState, { state: "noAuth" }>;
+
+    if (token.value && syncState.isNewAuth(token.value)) {
+      callbacks.authenticate(token.value);
+      setAuthState({
+        state: "waitingForServerConfirmationOfFreshToken",
+        config: current.config,
+        token: token.value,
+        hadAuth:
+          current.state === "notRefetching" ||
+          current.state === "waitingForScheduledRefetch",
+      });
+    } else {
+      logVerbose("reauthentication failed, could not fetch a new token");
+      if (syncState.hasAuth()) {
+        syncState.clearAuth();
+      }
+      setAndReportAuthFailed(current.config.onAuthChange);
+    }
+    callbacks.tryRestartSocket();
+  }, `${name}.tryToReauthenticate`);
+
+  return {
+    authState,
+
+    setConfig: action(
+      async (
+        fetchToken: AuthTokenFetcher,
+        onChange: (isAuthenticated: boolean) => void,
+        onRefreshChange?: (isRefreshing: boolean) => void,
+      ) => {
+        resetAuthState();
+        logVerbose("pausing WS for auth token fetch");
+        callbacks.pauseSocket();
+        const token = await wrap(
+          fetchTokenAndGuardAgainstRace(fetchToken, {
+            forceRefreshToken: false,
+          }),
+        );
+        if (token.isFromOutdatedConfig) {
+          return;
+        }
+        const config: AuthConfig = {
+          fetchToken,
+          onAuthChange: onChange,
+          onRefreshChange,
+        };
+        if (token.value) {
+          setAuthState({
+            state: "waitingForServerConfirmationOfCachedToken",
+            config,
+            hasRetried: false,
+          });
+          callbacks.authenticate(token.value);
+        } else {
+          setAuthState({
+            state: "initialRefetch",
+            config,
+          });
+          // Try again with `forceRefreshToken: true`
+          await wrap(refetchToken());
+        }
+        logVerbose("resuming WS after auth token fetch");
+        callbacks.resumeSocket();
+      },
+      `${name}.setConfig`,
+    ),
+
+    onTransition: action((serverMessage: Transition) => {
+      if (
+        !syncState.isCurrentOrNewerAuthVersion(
+          serverMessage.endVersion.identity,
+        )
+      ) {
+        // This is a stale transition - client has moved on to
+        // a newer auth version.
+        return;
+      }
+      if (
+        serverMessage.endVersion.identity <= serverMessage.startVersion.identity
+      ) {
+        // This transition did not change auth - it is not a response to Authenticate.
+        return;
+      }
+
+      const current = authState();
+      logVerbose(`auth state is ${current.state} when handling transition`);
+
+      // This transition advanced the auth version, which means the token used was valid
+      // and the client and server auth states are in sync.
+      syncState.markAuthCompletion();
+
+      if (current.state === "waitingForServerConfirmationOfCachedToken") {
+        logVerbose("server confirmed auth token is valid");
+        const cachedToken = syncState.getAuth()?.value;
+        if (initialAuthTokenReuse && cachedToken) {
+          scheduleTokenRefetch(cachedToken, serverMessage.clientClockSkew);
+        } else {
+          void refetchToken();
+        }
+        current.config.onAuthChange(true);
+        return;
+      }
+      if (current.state === "waitingForServerConfirmationOfFreshToken") {
+        logVerbose("server confirmed new auth token is valid");
+        notifyRefreshChange(false);
+        scheduleTokenRefetch(current.token);
+        tokenConfirmationAttempts.set(0);
+        // Read after scheduling: once a refetch is scheduled the state has no
+        // `hadAuth`, so the change is reported.
+        const scheduled = authState() as { hadAuth?: boolean };
+        if (!scheduled.hadAuth) {
+          current.config.onAuthChange(true);
+        }
+      }
+    }, `${name}.onTransition`),
+
+    onAuthError: action((serverMessage: AuthError) => {
+      const current = authState().state;
+      // If the AuthError is not due to updating the token, and we're currently
+      // waiting on the result of a token update, ignore.
+      if (
+        serverMessage.authUpdateAttempted === false &&
+        (current === "waitingForServerConfirmationOfFreshToken" ||
+          current === "waitingForServerConfirmationOfCachedToken")
+      ) {
+        logVerbose("ignoring non-auth token expired error");
+        return;
+      }
+      const { baseVersion } = serverMessage;
+      // Versioned AuthErrors are ignored if the client advanced to
+      // a newer auth identity
+      // Error are reporting the previous version, since the server
+      // didn't advance, hence `+ 1`.
+      if (!syncState.isCurrentOrNewerAuthVersion(baseVersion + 1)) {
+        logVerbose("ignoring auth error for previous auth attempt");
+        return;
+      }
+      void tryToReauthenticate(serverMessage);
+    }, `${name}.onAuthError`),
+
+    stop: action(() => {
+      resetAuthState();
+      // Bump this in case we are mid-token-fetch when we get stopped
+      configVersion.set((version) => version + 1);
+      logVerbose(`config version bumped to ${configVersion()}`);
+    }, `${name}.stop`),
+  };
 }
+
+export type AuthenticationManager = ReturnType<
+  typeof reatomAuthenticationManager
+>;
