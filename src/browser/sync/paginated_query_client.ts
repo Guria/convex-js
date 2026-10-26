@@ -25,31 +25,44 @@ import {
 } from "./pagination.js";
 import { TS } from "./protocol.js";
 import { Long } from "../../vendor/long.js";
+import { action, atom, Atom, bind, context, Frame } from "./reatom.js";
 
 type QueryPageKey = number;
 
+type PageQuery = {
+  queryToken: QueryToken;
+  unsubscribe: () => void;
+  cursor: string | null;
+};
+
 /**
- * Represents a paginated query subscription with multiple pages.
+ * The pages of a paginated query.
  *
  * To know the order of pages it's necessary to consult `pageKeys`.
  * The pages in this array are active, they constitute a gapless sequence of results.
  * Some pages are not in this array: they may be waiting for data for a page split.
  */
+type Pages = {
+  nextPageKey: QueryPageKey;
+  pageKeys: readonly QueryPageKey[]; // These pages make up the active page queries.
+  // Map page keys to their query subscriptions
+  pageKeyToQuery: ReadonlyMap<QueryPageKey, PageQuery>;
+  ongoingSplits: ReadonlyMap<
+    QueryPageKey,
+    readonly [QueryPageKey, QueryPageKey]
+  >;
+};
+
+/**
+ * Represents a paginated query subscription with multiple pages.
+ */
 type LocalPaginatedQuery = {
   token: PaginatedQueryToken;
   canonicalizedUdfPath: string;
   args: Record<string, Value>; // WITHOUT paginationOpts
-  numSubscribers: number;
+  numSubscribers: Atom<number>;
   options: { initialNumItems: number };
-  nextPageKey: QueryPageKey;
-  pageKeys: QueryPageKey[]; // These pages make up the active page queries.
-  // Map page keys to their query subscriptions
-  pageKeyToQuery: Map<
-    QueryPageKey,
-    { queryToken: QueryToken; unsubscribe: () => void; cursor: string | null }
-  >;
-  ongoingSplits: Map<QueryPageKey, [QueryPageKey, QueryPageKey]>;
-  skip: boolean;
+  pages: Atom<Pages>;
 
   // Give separate uses of the query separate identities,
   // which may be removed in the future to improve caching.
@@ -74,21 +87,49 @@ export type ExtendedTransition = Transition & {
   }>;
 };
 
-/** @internal */
+/**
+ * Maps subscriptions to paginated queries to their page queries. Page lists
+ * live in atoms; `loadMore` and page splits are actions.
+ *
+ * @internal
+ */
 export class PaginatedQueryClient {
+  // Indexes: paginated queries by token, and the paginated queries each page
+  // query belongs to.
   private paginatedQuerySet: Map<PaginatedQueryToken, LocalPaginatedQuery> =
     new Map();
+  private pageOwners: Map<QueryToken, Set<PaginatedQueryToken>> = new Map();
   // hold onto a real Transition so we can construct synthetic ones with that timestamp
-  private lastTransitionTs: TS;
+  private readonly lastTransitionTs: Atom<TS>;
+  private readonly root: Frame;
+  private readonly loadMoreAction: (
+    token: PaginatedQueryToken,
+    numItems: number,
+  ) => boolean;
 
   constructor(
     private client: BaseConvexClientInterface,
     private onTransition: (transition: ExtendedTransition) => void,
   ) {
+    this.root = context();
     // Nonsense initial value to construct synthetic Transitions
-    this.lastTransitionTs = Long.fromNumber(0);
-    this.client.addOnTransitionHandler((transition: Transition) =>
-      this.onBaseTransition(transition),
+    this.lastTransitionTs = atom(
+      Long.fromNumber(0),
+      "paginatedQueryClient.lastTransitionTs",
+    );
+    this.loadMoreAction = bind(
+      action(
+        (token: PaginatedQueryToken, numItems: number) =>
+          this.loadMoreOfPaginatedQuery(token, numItems),
+        "paginatedQueryClient.loadMore",
+      ),
+      this.root,
+    );
+    this.client.addOnTransitionHandler(
+      bind(
+        (transition: Transition) => this.onBaseTransition(transition),
+        this.root,
+      ),
     );
   }
 
@@ -108,46 +149,55 @@ export class PaginatedQueryClient {
     paginatedQueryToken: PaginatedQueryToken;
     unsubscribe: () => void;
   } {
-    const canonicalizedUdfPath = canonicalizeUdfPath(name);
-    // Note that only the expected options are included in the serialization.
-    const token = serializePaginatedPathAndArgs(
-      canonicalizedUdfPath,
-      args,
-      options,
-    );
+    return this.root.run(() => {
+      const canonicalizedUdfPath = canonicalizeUdfPath(name);
+      // Note that only the expected options are included in the serialization.
+      const token = serializePaginatedPathAndArgs(
+        canonicalizedUdfPath,
+        args,
+        options,
+      );
 
-    const unsubscribe = () => this.removePaginatedQuerySubscriber(token);
+      const unsubscribe = bind(
+        () => this.removePaginatedQuerySubscriber(token),
+        this.root,
+      );
 
-    const existingEntry = this.paginatedQuerySet.get(token);
-    if (existingEntry) {
-      existingEntry.numSubscribers += 1;
+      const existingEntry = this.paginatedQuerySet.get(token);
+      if (existingEntry) {
+        existingEntry.numSubscribers.set((count) => count + 1);
+        return {
+          paginatedQueryToken: token,
+          unsubscribe,
+        };
+      }
+
+      // Create new paginated query
+      this.paginatedQuerySet.set(token, {
+        token,
+        canonicalizedUdfPath,
+        args,
+        numSubscribers: atom(1, "paginatedQuery.numSubscribers"),
+        options: { initialNumItems: options.initialNumItems },
+        pages: atom<Pages>(
+          {
+            nextPageKey: 0,
+            pageKeys: [],
+            pageKeyToQuery: new Map(),
+            ongoingSplits: new Map(),
+          },
+          "paginatedQuery.pages",
+        ),
+        id: options.id,
+      });
+
+      this.addPageToPaginatedQuery(token, null, options.initialNumItems);
+
       return {
         paginatedQueryToken: token,
         unsubscribe,
       };
-    }
-
-    // Create new paginated query
-    this.paginatedQuerySet.set(token, {
-      token,
-      canonicalizedUdfPath,
-      args,
-      numSubscribers: 1,
-      options: { initialNumItems: options.initialNumItems },
-      nextPageKey: 0,
-      pageKeys: [],
-      pageKeyToQuery: new Map(),
-      ongoingSplits: new Map(),
-      skip: false,
-      id: options.id,
     });
-
-    this.addPageToPaginatedQuery(token, null, options.initialNumItems);
-
-    return {
-      paginatedQueryToken: token,
-      unsubscribe,
-    };
   }
 
   /**
@@ -175,23 +225,20 @@ export class PaginatedQueryClient {
   localQueryResultByToken(
     token: PaginatedQueryToken,
   ): AnyPaginatedQueryResult | undefined {
-    // undefined is probably the wrong value! Should be a real paginated query result for loading!
-    // Butit's confusing why we'd ever get this, I guess some flows call localQueryResult before
-    // subscribing? That's proabbly fair but is it consistent with the normal client?
-    // What is the invariant here, will a token always exist? Or can a lookup occur at any time?
     const paginatedQuery = this.paginatedQuerySet.get(token);
     if (!paginatedQuery) {
       return undefined;
     }
+    const loadMore = (numItems: number) => this.loadMoreAction(token, numItems);
 
-    const activePages = this.activePageQueryTokens(paginatedQuery);
+    const activePages = this.root.run(() =>
+      this.activePageQueryTokens(paginatedQuery),
+    );
     if (activePages.length === 0) {
       return {
         results: [],
         status: "LoadingFirstPage",
-        loadMore: (numItems: number) => {
-          return this.loadMoreOfPaginatedQuery(token, numItems);
-        },
+        loadMore,
       };
     }
 
@@ -235,15 +282,15 @@ export class PaginatedQueryClient {
     return {
       results: allResults,
       status,
-      loadMore: (numItems: number) => {
-        return this.loadMoreOfPaginatedQuery(token, numItems);
-      },
+      loadMore,
     };
   }
 
   private onBaseTransition(transition: Transition) {
-    const changedBaseTokens = transition.queries.map((q) => q.token);
-    const changed = this.queriesContainingTokens(changedBaseTokens);
+    this.lastTransitionTs.set(transition.timestamp);
+    const changed = this.queriesContainingTokens(
+      transition.queries.map((q) => q.token),
+    );
 
     let paginatedQueries: Array<{
       token: PaginatedQueryToken;
@@ -310,7 +357,7 @@ export class PaginatedQueryClient {
     );
 
     const loadMoreTransition: ExtendedTransition = {
-      timestamp: this.lastTransitionTs,
+      timestamp: this.lastTransitionTs(),
       reflectedMutations: [],
       queries: [],
       paginatedQueries: [
@@ -334,23 +381,13 @@ export class PaginatedQueryClient {
   private queriesContainingTokens(
     queryTokens: QueryToken[],
   ): PaginatedQueryToken[] {
-    if (queryTokens.length === 0) {
-      return [];
+    const changed = new Set<PaginatedQueryToken>();
+    for (const queryToken of queryTokens) {
+      const owners = this.pageOwners.get(queryToken);
+      if (owners === undefined) continue;
+      for (const owner of owners) changed.add(owner);
     }
-
-    const changed: PaginatedQueryToken[] = [];
-    const queryTokenSet = new Set(queryTokens);
-
-    for (const [paginatedToken, paginatedQuery] of this.paginatedQuerySet) {
-      for (const pageToken of this.allQueryTokens(paginatedQuery)) {
-        if (queryTokenSet.has(pageToken)) {
-          changed.push(paginatedToken);
-          break;
-        }
-      }
-    }
-
-    return changed;
+    return [...changed];
   }
 
   /**
@@ -363,11 +400,10 @@ export class PaginatedQueryClient {
     for (const paginatedQueryToken of changed) {
       const paginatedQuery = this.mustGetPaginatedQuery(paginatedQueryToken);
 
-      // These properties are all mutable, the destructure here is optional.
-      const { ongoingSplits, pageKeyToQuery, pageKeys } = paginatedQuery;
-
       // Check for any completed splits
-      for (const [pageKey, [splitKey1, splitKey2]] of ongoingSplits) {
+      for (const [pageKey, [splitKey1, splitKey2]] of paginatedQuery.pages()
+        .ongoingSplits) {
+        const { pageKeyToQuery } = paginatedQuery.pages();
         const bothNewPagesLoaded =
           getResult(pageKeyToQuery.get(splitKey1)!.queryToken) !== undefined &&
           getResult(pageKeyToQuery.get(splitKey2)!.queryToken) !== undefined;
@@ -383,7 +419,8 @@ export class PaginatedQueryClient {
       }
 
       // Check each active page for splits needed
-      for (const pageKey of pageKeys) {
+      for (const pageKey of paginatedQuery.pages().pageKeys) {
+        const { ongoingSplits, pageKeyToQuery } = paginatedQuery.pages();
         if (ongoingSplits.has(pageKey)) {
           continue; // Already splitting
         }
@@ -419,6 +456,39 @@ export class PaginatedQueryClient {
     }
   }
 
+  private subscribePage(
+    paginatedQuery: LocalPaginatedQuery,
+    paginationOpts: Value,
+    cursor: string | null,
+  ): PageQuery {
+    const subscription = this.client.subscribe(
+      paginatedQuery.canonicalizedUdfPath,
+      { ...paginatedQuery.args, paginationOpts },
+    );
+    const { queryToken } = subscription;
+    let owners = this.pageOwners.get(queryToken);
+    if (owners === undefined) {
+      owners = new Set();
+      this.pageOwners.set(queryToken, owners);
+    }
+    owners.add(paginatedQuery.token);
+    return {
+      queryToken,
+      cursor,
+      unsubscribe: () => {
+        subscription.unsubscribe();
+        const current = this.pageOwners.get(queryToken);
+        if (current === undefined) return;
+        // Another page of the same paginated query may share the token.
+        const stillOwned = [
+          ...paginatedQuery.pages().pageKeyToQuery.values(),
+        ].some((page) => page.queryToken === queryToken);
+        if (!stillOwned) current.delete(paginatedQuery.token);
+        if (current.size === 0) this.pageOwners.delete(queryToken);
+      },
+    };
+  }
+
   private splitPaginatedQueryPage(
     paginatedQuery: LocalPaginatedQuery,
     pageKey: QueryPageKey,
@@ -430,49 +500,39 @@ export class PaginatedQueryClient {
     // Where the page being split ended.
     continueCursor: string | null,
   ): void {
-    const splitKey1 = paginatedQuery.nextPageKey++;
-    const splitKey2 = paginatedQuery.nextPageKey++;
+    const pages = paginatedQuery.pages();
+    const splitKey1 = pages.nextPageKey;
+    const splitKey2 = pages.nextPageKey + 1;
 
-    const paginationOpts: Value = {
+    const paginationOpts = {
       numItems: paginatedQuery.options.initialNumItems,
       id: paginatedQuery.id,
     };
 
     // First split page: same cursor as the original page, ending at splitCursor
-    const firstSubscription = this.client.subscribe(
-      paginatedQuery.canonicalizedUdfPath,
-      {
-        ...paginatedQuery.args,
-        paginationOpts: {
-          ...paginationOpts,
-          cursor: startCursor,
-          endCursor: splitCursor,
-        },
-      },
+    const first = this.subscribePage(
+      paginatedQuery,
+      { ...paginationOpts, cursor: startCursor, endCursor: splitCursor },
+      startCursor,
     );
-    paginatedQuery.pageKeyToQuery.set(splitKey1, {
-      ...firstSubscription,
-      cursor: startCursor,
-    });
-
     // Second split page: cursor starts at splitCursor, endCursor is the original continueCursor
-    const secondSubscription = this.client.subscribe(
-      paginatedQuery.canonicalizedUdfPath,
-      {
-        ...paginatedQuery.args,
-        paginationOpts: {
-          ...paginationOpts,
-          cursor: splitCursor,
-          endCursor: continueCursor,
-        },
-      },
+    const second = this.subscribePage(
+      paginatedQuery,
+      { ...paginationOpts, cursor: splitCursor, endCursor: continueCursor },
+      splitCursor,
     );
-    paginatedQuery.pageKeyToQuery.set(splitKey2, {
-      ...secondSubscription,
-      cursor: splitCursor,
-    });
 
-    paginatedQuery.ongoingSplits.set(pageKey, [splitKey1, splitKey2]);
+    paginatedQuery.pages.set({
+      ...pages,
+      nextPageKey: pages.nextPageKey + 2,
+      pageKeyToQuery: new Map(pages.pageKeyToQuery)
+        .set(splitKey1, first)
+        .set(splitKey2, second),
+      ongoingSplits: new Map(pages.ongoingSplits).set(pageKey, [
+        splitKey1,
+        splitKey2,
+      ]),
+    });
   }
 
   /**
@@ -482,30 +542,22 @@ export class PaginatedQueryClient {
     token: PaginatedQueryToken,
     continueCursor: string | null,
     numItems: number,
-  ): { queryToken: QueryToken; unsubscribe: () => void } {
+  ): PageQuery {
     const paginatedQuery = this.mustGetPaginatedQuery(token);
-    const pageKey = paginatedQuery.nextPageKey++;
+    const pages = paginatedQuery.pages();
+    const pageKey = pages.nextPageKey;
 
-    const paginationOpts: Value = {
-      cursor: continueCursor,
-      numItems,
-      id: paginatedQuery.id,
-    };
-
-    const pageArgs = {
-      ...paginatedQuery.args,
-      paginationOpts,
-    };
-
-    const subscription = this.client.subscribe(
-      paginatedQuery.canonicalizedUdfPath,
-      pageArgs,
+    const subscription = this.subscribePage(
+      paginatedQuery,
+      { cursor: continueCursor, numItems, id: paginatedQuery.id },
+      continueCursor,
     );
 
-    paginatedQuery.pageKeys.push(pageKey);
-    paginatedQuery.pageKeyToQuery.set(pageKey, {
-      ...subscription,
-      cursor: continueCursor,
+    paginatedQuery.pages.set({
+      ...pages,
+      nextPageKey: pageKey + 1,
+      pageKeys: [...pages.pageKeys, pageKey],
+      pageKeyToQuery: new Map(pages.pageKeyToQuery).set(pageKey, subscription),
     });
     return subscription;
   }
@@ -516,17 +568,25 @@ export class PaginatedQueryClient {
       return;
     }
 
-    paginatedQuery.numSubscribers -= 1;
-    if (paginatedQuery.numSubscribers > 0) {
+    const numSubscribers = paginatedQuery.numSubscribers.set(
+      (count) => count - 1,
+    );
+    if (numSubscribers > 0) {
       return;
     }
 
+    this.paginatedQuerySet.delete(token);
     // Remove all page subscriptions by calling their unsubscribe callbacks
-    for (const subscription of paginatedQuery.pageKeyToQuery.values()) {
+    const subscriptions = [...paginatedQuery.pages().pageKeyToQuery.values()];
+    paginatedQuery.pages.set({
+      nextPageKey: 0,
+      pageKeys: [],
+      pageKeyToQuery: new Map(),
+      ongoingSplits: new Map(),
+    });
+    for (const subscription of subscriptions) {
       subscription.unsubscribe();
     }
-
-    this.paginatedQuerySet.delete(token);
   }
 
   private completePaginatedQuerySplit(
@@ -535,11 +595,20 @@ export class PaginatedQueryClient {
     splitKey1: QueryPageKey,
     splitKey2: QueryPageKey,
   ): void {
-    const originalQuery = paginatedQuery.pageKeyToQuery.get(pageKey)!;
-    paginatedQuery.pageKeyToQuery.delete(pageKey);
-    const pageIndex = paginatedQuery.pageKeys.indexOf(pageKey);
-    paginatedQuery.pageKeys.splice(pageIndex, 1, splitKey1, splitKey2);
-    paginatedQuery.ongoingSplits.delete(pageKey);
+    const pages = paginatedQuery.pages();
+    const originalQuery = pages.pageKeyToQuery.get(pageKey)!;
+    const pageKeyToQuery = new Map(pages.pageKeyToQuery);
+    pageKeyToQuery.delete(pageKey);
+    const ongoingSplits = new Map(pages.ongoingSplits);
+    ongoingSplits.delete(pageKey);
+    paginatedQuery.pages.set({
+      ...pages,
+      pageKeys: pages.pageKeys.flatMap((key) =>
+        key === pageKey ? [splitKey1, splitKey2] : [key],
+      ),
+      pageKeyToQuery,
+      ongoingSplits,
+    });
     originalQuery.unsubscribe();
   }
 
@@ -547,27 +616,20 @@ export class PaginatedQueryClient {
   private activePageQueryTokens(
     paginatedQuery: LocalPaginatedQuery,
   ): QueryToken[] {
-    return paginatedQuery.pageKeys.map(
-      (pageKey) => paginatedQuery.pageKeyToQuery.get(pageKey)!.queryToken,
-    );
-  }
-
-  private allQueryTokens(paginatedQuery: LocalPaginatedQuery): QueryToken[] {
-    return Array.from(paginatedQuery.pageKeyToQuery.values()).map(
-      (sub) => sub.queryToken,
-    );
+    const { pageKeys, pageKeyToQuery } = paginatedQuery.pages();
+    return pageKeys.map((pageKey) => pageKeyToQuery.get(pageKey)!.queryToken);
   }
 
   private queryTokenForLastPageOfPaginatedQuery(
     token: PaginatedQueryToken,
   ): QueryToken {
     const paginatedQuery = this.mustGetPaginatedQuery(token);
-    const lastPageKey =
-      paginatedQuery.pageKeys[paginatedQuery.pageKeys.length - 1];
+    const { pageKeys, pageKeyToQuery } = paginatedQuery.pages();
+    const lastPageKey = pageKeys[pageKeys.length - 1];
     if (lastPageKey === undefined) {
       throw new Error(`No pages for paginated query ${token}`);
     }
-    return paginatedQuery.pageKeyToQuery.get(lastPageKey)!.queryToken;
+    return pageKeyToQuery.get(lastPageKey)!.queryToken;
   }
 
   private mustGetPaginatedQuery(
