@@ -21,6 +21,7 @@ import { logout } from "./logout.js";
 import { logs } from "./logs.js";
 import { mcp } from "./mcp.js";
 import { networkTest } from "./network_test.js";
+import { plugins } from "./plugins.js";
 import { project } from "./project.js";
 import { reinit } from "./reinit.js";
 import { run } from "./run.js";
@@ -62,6 +63,7 @@ export function buildProgram() {
       .addCommand(insights)
       .addCommand(mcp)
       .addCommand(aiFiles)
+      .addCommand(plugins)
       .helpCommand("help <command>", "Show help for given <command>")
       .version(version)
       // Hide version and help so they don't clutter
