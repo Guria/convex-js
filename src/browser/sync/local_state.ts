@@ -10,7 +10,7 @@
  * `result`.
  **/
 
-import { convexToJson, Value } from "../../values/index.js";
+import { convexToJson, JSONValue, Value } from "../../values/index.js";
 import { FunctionResult } from "./function_result.js";
 import {
   AddQuery,
@@ -24,16 +24,14 @@ import {
   UserIdentityAttributes,
 } from "./protocol.js";
 import { atom, Atom } from "./reatom.js";
-import {
-  canonicalizeUdfPath,
-  QueryToken,
-  serializePathAndArgs,
-} from "./udf_path_utils.js";
+import { canonicalizeUdfPath, QueryToken } from "./udf_path_utils.js";
 
 export type QueryEntry = {
   readonly token: QueryToken;
   readonly udfPath: string;
   readonly args: Record<string, Value>;
+  /** `args` as sent, serialized when the entry was created. */
+  readonly jsonArgs: JSONValue;
   /** The result with optimistic updates applied, `undefined` while loading. */
   readonly result: Atom<FunctionResult | undefined>;
   /**
@@ -69,7 +67,7 @@ function addOf(entry: QueryEntry): AddQuery {
     type: "Add",
     queryId: entry.id!,
     udfPath: entry.udfPath,
-    args: [convexToJson(entry.args)],
+    args: [entry.jsonArgs],
     journal: entry.journal,
     componentPath: entry.componentPath,
   };
@@ -95,17 +93,21 @@ export function reatomLocalSyncState(name: string) {
   const outstandingQueriesOlderThanRestart = new Set<QueryId>();
   let nextQueryId: QueryId = 0;
 
-  const entry = (
-    udfPath: string,
-    args: Record<string, Value>,
-    token = serializePathAndArgs(udfPath, args),
-  ): QueryEntry => {
+  const entry = (udfPath: string, args: Record<string, Value>): QueryEntry => {
+    // Serialized now: the caller may mutate `args` before the flush.
+    const jsonArgs = convexToJson(args);
+    const canonicalUdfPath = canonicalizeUdfPath(udfPath);
+    const token = JSON.stringify({
+      udfPath: canonicalUdfPath,
+      args: jsonArgs,
+    }) as QueryToken;
     const existing = entries.get(token);
     if (existing !== undefined) return existing;
     const created: QueryEntry = {
       token,
-      udfPath: canonicalizeUdfPath(udfPath),
+      udfPath: canonicalUdfPath,
       args,
+      jsonArgs,
       result: atom<FunctionResult | undefined>(undefined, `${name}.query`),
       present: false,
       serverResult: undefined,
@@ -202,7 +204,12 @@ export function reatomLocalSyncState(name: string) {
         byId.delete(subscribed.id!);
         subscribed.id = null;
         subscribed.op = null;
-        retired.add(subscribed);
+        // Nothing shows a result for it: drop it now, no transition is coming.
+        if (subscribed.present) {
+          retired.add(subscribed);
+        } else {
+          entries.delete(subscribed.token);
+        }
         return false;
       }
       subscribed.op = "Remove";
