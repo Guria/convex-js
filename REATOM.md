@@ -6,8 +6,8 @@ On this branch the sync client keeps its state in
 their API and run on top of it. Reatom apps can use the atoms directly.
 
 `@reatom/core` is a peer dependency, so the client's atoms share the app's
-Reatom context; a second copy would give them a context of their own. The
-branch develops against the pkg.pr.new preview of the `v1001` branch at
+Reatom context; a second copy would give them a context of their own. The branch
+develops against the pkg.pr.new preview of the `v1001` branch at
 `reatom/reatom@5f42184`, which includes the fix that lets Node exit with Reatom
 loaded. The CLI bundles its own copy, since it runs `BaseConvexClient` in Node.
 
@@ -124,3 +124,28 @@ PARITY_TRACE=/tmp/trace.json npx vitest run -t "<scenario>"  # both traces
 ```
 
 `src/browser/reatom/client.test.ts` covers the Reatom API.
+
+## Branches and releases
+
+`main` mirrors [convex/convex-js](https://github.com/convex/convex-js) and holds
+nothing else, so branches for upstream PRs start from it. `reatom` is upstream
+plus this client, and npm gets it as `reatom-convex`.
+
+To move to a new upstream release, fast-forward `main`, merge it into `reatom`,
+and set the `package.json` version:
+
+```sh
+git fetch upstream
+git push origin upstream/main:main
+git merge upstream/main
+```
+
+A release of upstream X.Y.Z is X.Y.(100 × Z + n), so every version satisfies the
+`convex` ranges other packages declare. `src/index.ts` keeps upstream's version,
+which the server functions, the CLI and the client report to Convex;
+`scripts/version-check.mjs` checks the two agree. A change of this branch alone
+bumps n: 1.48.0 to 1.48.1.
+
+`.github/workflows/release.yml` runs on every push to `reatom`. When npm doesn't
+have the `package.json` version, it tests, packs and publishes through npm
+trusted publishing, then tags the commit `reatom-convex@<version>`.
