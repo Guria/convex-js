@@ -88,6 +88,23 @@ weakly, so an unused entry can be collected.
   Reatom functions the client uses are 5.2 KiB of that, shared with an app that
   already uses Reatom.
 
+## Performance
+
+Measured in the
+[reatom-convex-auth bench](https://github.com/Guria/reatom-convex-auth/blob/exp/reatom-native-convex-client/packages/bench/RESULTS_ARTIFACTS.md)
+at `a5c9bed`, 1000 components each with its own query, Chromium, medians:
+
+| Scenario   | convex@1.48.0, convex/react | this branch, convex/react | this branch's atoms, @reatom/jsx |
+| ---------- | --------------------------: | ------------------------: | -------------------------------: |
+| mount      |                     65.5 ms |                   14.4 ms |                          9.24 ms |
+| unmount    |                     9.87 ms |                   2.91 ms |                          1.99 ms |
+| update all |                     4.12 ms |                   6.15 ms |                          3.15 ms |
+
+Through `BaseConvexClient` each query is an atom, so convex/react pays an atom
+per subscription and a write per update: updating 1000 queries at once is slower
+than in convex@1.48.0. Read directly, the atoms mount faster than any other
+column in that bench and update as fast as its native Reatom client.
+
 ## Tests
 
 `src/browser/reatom/parity*.test.ts` and `src/react/parity_hooks.test.tsx` run
