@@ -1,0 +1,27 @@
+{
+  "include": ["staged"],
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "es2020",
+    "moduleResolution": "bundler",
+    "lib": ["es2022", "dom"],
+    "rootDir": "./staged",
+    "outDir": "./dist",
+    "declaration": true,
+    "stripInternal": true,
+    "isolatedModules": true,
+    "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": [],
+    "paths": {
+      "convex/values": [
+        "../node_modules/convex-upstream/dist/esm-types/values/index.d.ts"
+      ],
+      "convex/server": [
+        "../node_modules/convex-upstream/dist/esm-types/server/index.d.ts"
+      ]
+    }
+  }
+}

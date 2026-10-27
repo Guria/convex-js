@@ -12,12 +12,6 @@ const packageJsonPath = join(__dirname, "../package.json");
 const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
 const packageVersion = packageJson.version;
 
-// @reatomized/convex releases X.Y.(100 * upstream patch + fork release) of upstream
-// X.Y.patch, so they satisfy the `convex` ranges other packages declare.
-// src/index.ts holds the upstream version the server and CLI see.
-const [major, minor, patch] = packageVersion.split(".").map(Number);
-const upstreamVersion = `${major}.${minor}.${Math.floor(patch / 100)}`;
-
 // Read src/index.ts version
 const indexTsPath = join(__dirname, "../src/index.ts");
 const indexTsContent = readFileSync(indexTsPath, "utf-8");
@@ -35,10 +29,10 @@ if (!versionMatch) {
 const tsVersion = versionMatch[1];
 
 // Compare versions
-if (upstreamVersion !== tsVersion) {
+if (packageVersion !== tsVersion) {
   console.error(
     `Version mismatch!\n` +
-      `  package.json:  ${packageVersion} (upstream ${upstreamVersion})\n` +
+      `  package.json:  ${packageVersion}\n` +
       `  src/index.ts:  ${tsVersion}\n` +
       `\nPlease update src/index.ts to match package.json before publishing.`,
   );
@@ -46,5 +40,5 @@ if (upstreamVersion !== tsVersion) {
 }
 
 console.log(
-  `✓ The version in src/index.ts (${tsVersion}) matches package.json (${packageVersion})`,
+  `✓ The version in src/index.ts (${packageVersion}) matches package.json`,
 );

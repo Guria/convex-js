@@ -1,0 +1,44 @@
+{
+  "name": "@reatomized/convex",
+  "version": "0.1.0",
+  "description": "A Convex sync client with its state in Reatom atoms",
+  "keywords": [
+    "convex",
+    "reatom",
+    "realtime",
+    "state"
+  ],
+  "homepage": "https://github.com/reatomized/convex/blob/reatom/REATOM.md",
+  "bugs": {
+    "url": "https://github.com/reatomized/convex/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/reatomized/convex.git",
+    "directory": "reatomized"
+  },
+  "license": "Apache-2.0",
+  "author": "Aleksei Gurianov <gurianov@gmail.com>",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/browser/reatom/index.d.ts",
+      "default": "./dist/browser/reatom/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "prepack": "node build.mjs"
+  },
+  "peerDependencies": {
+    "@reatom/core": "^1001.3.0",
+    "convex": "^1.48.0"
+  }
+}

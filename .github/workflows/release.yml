@@ -1,7 +1,7 @@
 name: Release
 
-# Publishes @reatomized/convex when package.json on `reatom` holds a version
-# npm doesn't have yet, then tags the commit `v<version>`.
+# Publishes @reatomized/convex when reatomized/package.json on `reatom` holds a
+# version npm doesn't have yet, then tags the commit `v<version>`.
 on:
   push:
     branches: [reatom]
@@ -28,15 +28,10 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
-      # scripts/build.py runs through uv.
-      - uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: false
-
       - name: Check whether the version is published
         id: version
         run: |
-          version=$(node -p 'require("./package.json").version')
+          version=$(node -p 'require("./reatomized/package.json").version')
           echo "version=$version" >> "$GITHUB_OUTPUT"
           if npm view "@reatomized/convex@$version" version 2>/dev/null | grep -q .; then
             echo "@reatomized/convex@$version is on npm already."
@@ -62,16 +57,17 @@ jobs:
         if: steps.version.outputs.publish == 'true'
         run: |
           npm run typecheck
-          npx vitest run --silent=true
+          npx vitest run --silent=true src/browser/reatom
 
-      # prepack checks the version and builds; postpack strips internal types
-      # from the tarball, so publish the tarball rather than the directory.
+      # prepack builds the package.
       - name: Pack
         if: steps.version.outputs.publish == 'true'
+        working-directory: reatomized
         run: npm pack
 
       - name: Publish
         if: steps.version.outputs.publish == 'true'
+        working-directory: reatomized
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: npm publish "reatomized-convex-$VERSION.tgz" --access public
