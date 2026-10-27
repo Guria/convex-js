@@ -14,14 +14,6 @@
     "exactOptionalPropertyTypes": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "types": [],
-    "paths": {
-      "convex/values": [
-        "../node_modules/convex-upstream/dist/esm-types/values/index.d.ts"
-      ],
-      "convex/server": [
-        "../node_modules/convex-upstream/dist/esm-types/server/index.d.ts"
-      ]
-    }
+    "types": []
   }
 }

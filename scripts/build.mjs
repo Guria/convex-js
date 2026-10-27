@@ -5,17 +5,17 @@
 // `convex/values` and `convex/server`, the peer dependency, so the client
 // shares ConvexError and function references with the app's `convex`. tsc
 // then compiles staged/ to dist/, type-checking those imports against the
-// public types of npm `convex` (the `convex-upstream` dev dependency), and
-// staged/ is removed.
+// public types of the `convex` dev dependency, and staged/ is removed.
 import { spawnSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import process from "process";
 import url from "url";
 
-const here = path.dirname(url.fileURLToPath(import.meta.url));
-const repoSrc = path.join(here, "..", "src");
-const staged = path.join(here, "staged");
+const root = path.join(path.dirname(url.fileURLToPath(import.meta.url)), "..");
+const repoSrc = path.join(root, "src");
+const staged = path.join(root, "staged");
+const dist = path.join(root, "dist");
 const entry = path.join(repoSrc, "browser", "reatom", "index.ts");
 const peers = [
   [path.join(repoSrc, "values") + path.sep, "convex/values"],
@@ -37,7 +37,7 @@ function resolveSource(fromFile, spec) {
 }
 
 fs.rmSync(staged, { recursive: true, force: true });
-fs.rmSync(path.join(here, "dist"), { recursive: true, force: true });
+fs.rmSync(dist, { recursive: true, force: true });
 
 const queue = [entry];
 const seen = new Set(queue);
@@ -62,26 +62,21 @@ while (queue.length > 0) {
 const tsc = spawnSync(
   process.execPath,
   [
-    path.join(here, "..", "node_modules", "typescript", "bin", "tsc"),
+    path.join(root, "node_modules", "typescript", "bin", "tsc"),
     "-p",
-    here,
+    path.join(root, "tsconfig.build.json"),
   ],
   { stdio: "inherit" },
 );
 if (tsc.status !== 0) process.exit(tsc.status ?? 1);
 fs.rmSync(staged, { recursive: true });
 
-fs.copyFileSync(path.join(here, "..", "LICENSE"), path.join(here, "LICENSE"));
 // Vendored modules with their own license, e.g. src/vendor/jwt-decode.
 for (const file of seen) {
   const license = path.join(path.dirname(file), "LICENSE");
   if (fs.existsSync(license)) {
-    const dir = path.join(
-      here,
-      "dist",
-      path.relative(repoSrc, path.dirname(file)),
-    );
+    const dir = path.join(dist, path.relative(repoSrc, path.dirname(file)));
     fs.copyFileSync(license, path.join(dir, "LICENSE"));
   }
 }
-process.stdout.write(`Built ${seen.size} modules into reatomized/dist.\n`);
+process.stdout.write(`Built ${seen.size} modules into dist.\n`);

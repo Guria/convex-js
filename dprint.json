@@ -1,18 +1,5 @@
 {
-  "excludes": [
-    "temp",
-    ".git/",
-    "dist/",
-    "api-extractor-configs/reports",
-    "api-extractor-configs/temp",
-    "tmpDist*",
-    "cli-management-openapi.json",
-    "function-logs-openapi.json",
-    "src/cli/generatedApi.ts",
-    "src/cli/lib/generatedFunctionLogsApi.ts",
-    "src/vendor",
-    "CHANGELOG.md"
-  ],
+  "excludes": ["dist/", "staged/", "src/vendor", "package-lock.json"],
   "prettier": {
     "proseWrap": "always",
     "trailingComma": "all"
