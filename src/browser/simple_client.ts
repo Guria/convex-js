@@ -7,7 +7,7 @@ import {
   FunctionReference_future,
 } from "../server/index.js";
 import { getFunctionName } from "../server/api.js";
-import { AuthTokenFetcher } from "./sync/client.js";
+import { AuthTokenFetcher } from "./sync/authentication_manager.js";
 import {
   BaseConvexClient,
   BaseConvexClientOptions,

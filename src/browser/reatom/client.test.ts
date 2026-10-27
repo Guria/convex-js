@@ -1,9 +1,7 @@
-import { atom, clearStack, computed, context, noop } from "@reatom/core";
+import { atom, computed, context, noop } from "@reatom/core";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { makeFunctionReference } from "../../server/api.js";
 import { ConvexError } from "../../values/errors.js";
-import { BaseConvexClient } from "../sync/client.js";
-import { ConvexReactClient } from "../../react/client.js";
 import { internals, reatomConvexClient } from "./client.js";
 import { clientOptions, FakeServer, settle } from "./parity_test_helpers.js";
 
@@ -246,39 +244,5 @@ describe("reatomConvexClient", () => {
     expect(first.run(() => convex.query(list, {}).data())).toBeUndefined();
     await first.run(() => convex.close());
     await second.run(() => convex.close());
-  });
-
-  test("a ConvexReactClient can share the Reatom client's connection", async () => {
-    const frame = context.start();
-    const convex = reatomConvexClient(URL, clientOptions(server));
-    const react = frame.run(
-      () =>
-        new ConvexReactClient(URL, {
-          baseClient: BaseConvexClient.fromReatom(convex),
-        }),
-    );
-    const watch = react.watchQuery(list, {});
-    const updates: unknown[] = [];
-    watch.onUpdate(() => updates.push(watch.localQueryResult()));
-    frame.run(() => convex.query(list, {}).data.subscribe(noop));
-    await settle();
-    server.open();
-    expect(server.sockets).toHaveLength(1);
-    expect(server.querySet()).toHaveLength(1);
-    server.transition([["notes:list", {}, { value: ["shared"] }]]);
-    expect(updates).toEqual([["shared"]]);
-    await react.close();
-  });
-
-  // Last: clearStack drops the default context for the rest of the file.
-  test("BaseConvexClient works after clearStack", async () => {
-    clearStack();
-    const client = new BaseConvexClient(URL, () => {}, clientOptions(server));
-    server.open();
-    client.subscribe("notes:list", {});
-    await settle();
-    server.transition([["notes:list", {}, { value: 1 }]]);
-    expect(client.localQueryResult("notes:list", {})).toBe(1);
-    await client.close();
   });
 });

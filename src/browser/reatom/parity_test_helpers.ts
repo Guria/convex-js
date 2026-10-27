@@ -1,44 +1,41 @@
 /**
- * Runs one scenario against convex@1.48.0 from npm and against this package,
- * over the same scripted in-memory server, and compares what each client
- * shows the outside world.
+ * Runs one scenario against upstream's sync client in `../sync` and against
+ * the Reatom client, over the same scripted in-memory server, and compares
+ * what each client shows the outside world. The Reatom client runs behind
+ * `BaseConvexClient` and `PaginatedQueryClient` adapters that exist only for
+ * these tests.
  *
  * The server answers by query identity, not query id, and keeps each
  * client's versions, so both clients get consistent transitions even though
- * this package batches query set changes. Query set messages are not traced
- * one by one: scenarios trace the server's query set at checkpoints instead.
+ * the Reatom client batches query set changes. Query set messages are not
+ * traced one by one: scenarios trace the server's query set at checkpoints
+ * instead.
  */
 import { writeFileSync } from "fs";
 import { expect, vi } from "vitest";
-import * as upstreamBrowser from "convex-upstream/browser";
-import * as upstreamReact from "convex-upstream/react";
-import * as browser from "../index.js";
-import * as react from "../../react/index.js";
+import * as upstreamClient from "../sync/client.js";
+import * as upstreamPaginated from "../sync/paginated_query_client.js";
+import * as reatomClient from "./parity_base_client.js";
+import * as reatomPaginated from "./parity_paginated_query_client.js";
 import { Long } from "../../vendor/long.js";
 import { longToU64 } from "../sync/protocol.js";
 
 export type Impl = {
   name: "upstream" | "reatom";
-  BaseConvexClient: typeof browser.BaseConvexClient;
-  ConvexClient: typeof browser.ConvexClient;
-  ConvexReactClient: typeof react.ConvexReactClient;
-  react: typeof react;
+  BaseConvexClient: typeof upstreamClient.BaseConvexClient;
+  PaginatedQueryClient: typeof upstreamPaginated.PaginatedQueryClient;
 };
 
 export const implementations: Impl[] = [
   {
     name: "upstream",
-    BaseConvexClient: upstreamBrowser.BaseConvexClient as any,
-    ConvexClient: upstreamBrowser.ConvexClient as any,
-    ConvexReactClient: upstreamReact.ConvexReactClient as any,
-    react: upstreamReact as any,
+    BaseConvexClient: upstreamClient.BaseConvexClient,
+    PaginatedQueryClient: upstreamPaginated.PaginatedQueryClient,
   },
   {
     name: "reatom",
-    BaseConvexClient: browser.BaseConvexClient,
-    ConvexClient: browser.ConvexClient,
-    ConvexReactClient: react.ConvexReactClient,
-    react,
+    BaseConvexClient: reatomClient.BaseConvexClient as any,
+    PaginatedQueryClient: reatomPaginated.PaginatedQueryClient as any,
   },
 ];
 

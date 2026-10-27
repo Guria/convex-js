@@ -6,14 +6,14 @@ import {
   caught,
   clientOptions,
   expectParity,
+  FakeServer,
+  Impl,
   runBoth,
 } from "./parity_test_helpers.js";
 
 const URL = "https://happy-otter-123.convex.cloud";
 const list = makeFunctionReference<"query">("notes:list");
 const get = makeFunctionReference<"query">("notes:get");
-const add = makeFunctionReference<"mutation">("notes:add");
-const send = makeFunctionReference<"action">("notes:send");
 
 describe("BaseConvexClient", () => {
   test("subscribe, results, dedupe and unsubscribe", async () => {
@@ -253,57 +253,6 @@ describe("BaseConvexClient", () => {
   });
 });
 
-describe("ConvexClient", () => {
-  test("onUpdate, query and getCurrentValue", async () => {
-    await expectParity(async ({ impl, server, log, checkpoint }) => {
-      const client = new impl.ConvexClient(URL, clientOptions(server));
-      server.open();
-      const unsubscribe = client.onUpdate(
-        list,
-        {},
-        (value) => log({ update: value }),
-        (error) => log({ onError: error.message }),
-      );
-      await checkpoint("subscribed");
-      server.transition([["notes:list", {}, { value: ["a"] }]]);
-      log({ current: unsubscribe.getCurrentValue() });
-      // A second listener gets the cached value on the next tick.
-      const late = client.onUpdate(
-        list,
-        {},
-        (value) => log({ late: value }),
-        (error) => log({ lateError: error.message }),
-      );
-      await vi.advanceTimersByTimeAsync(0);
-      const once = client.query(get, { id: 3 });
-      await checkpoint("one-shot query");
-      server.transition([
-        ["notes:get", { id: 3 }, { value: "three" }],
-        ["notes:list", {}, { error: "gone" }],
-      ]);
-      log({ once: await once });
-      unsubscribe();
-      late();
-      await checkpoint("unsubscribed");
-      await client.close();
-    });
-  });
-
-  test("mutation and action helpers", async () => {
-    await expectParity(async ({ impl, server, log }) => {
-      const client = new impl.ConvexClient(URL, clientOptions(server));
-      server.open();
-      const mutation = caught(client.mutation(add, { text: "x" }));
-      const action = caught(client.action(send, {}));
-      server.respond(0, { value: 1 });
-      server.respond(1, { value: 2 });
-      server.transition([]);
-      log(await mutation, await action);
-      await client.close();
-    });
-  });
-});
-
 /** An unsigned JWT; the client only decodes `iat` and `exp`. */
 const jwt = (name: string, iat: number, exp: number) =>
   [
@@ -535,8 +484,6 @@ describe("auth", () => {
   });
 });
 
-const page = makeFunctionReference<"query">("notes:page");
-
 /** A page result as a paginated query function returns it. */
 const pageOf = (
   items: unknown[],
@@ -546,62 +493,82 @@ const pageOf = (
   value: { page: items, isDone: false, continueCursor, ...extra },
 });
 
-describe("pagination", () => {
-  test("ConvexClient pages: first page, load more, exhaust", async () => {
-    await expectParity(async ({ impl, server, log, checkpoint }) => {
-      const client = new impl.ConvexClient(URL, clientOptions(server));
-      server.open();
-      const unsubscribe = client.onPaginatedUpdate_experimental(
-        page,
-        { channel: "a" },
-        { initialNumItems: 2 },
-        (result: any) =>
-          log({ results: result.results, status: result.status }),
-        (error) => log({ onError: error.message }),
+/** A paginated client over a base client, logging each paginated update. */
+const paginatedClient = (
+  impl: Impl,
+  server: FakeServer,
+  log: (...entry: unknown[]) => void,
+) => {
+  const base = new impl.BaseConvexClient(URL, () => {}, clientOptions(server));
+  const paginated = new impl.PaginatedQueryClient(base, (transition) => {
+    for (const { modification } of transition.paginatedQueries) {
+      log(
+        modification.kind === "Updated"
+          ? {
+              results: modification.result?.results,
+              status: modification.result?.status,
+            }
+          : { paginated: modification.kind },
       );
+    }
+  });
+  return { base, paginated };
+};
+
+describe("pagination", () => {
+  test("first page, load more, exhaust", async () => {
+    await expectParity(async ({ impl, server, log, checkpoint }) => {
+      const { base, paginated } = paginatedClient(impl, server, log);
+      server.open();
+      const options = { initialNumItems: 2, id: 1 };
+      const { unsubscribe } = paginated.subscribe(
+        "notes:page",
+        { channel: "a" },
+        options,
+      );
+      const current = (): any =>
+        paginated.localQueryResult("notes:page", { channel: "a" }, options);
+      log({ loading: current()?.status });
       await checkpoint("first page");
-      const opts = { cursor: null, numItems: 2, id: -1 };
       server.transition([
         [
           "notes:page",
-          { channel: "a", paginationOpts: opts },
+          {
+            channel: "a",
+            paginationOpts: { cursor: null, numItems: 2, id: 1 },
+          },
           pageOf([1, 2], "c1"),
         ],
       ]);
-      const current: any = unsubscribe.getCurrentValue();
-      log({ current: current?.status });
-      log({ loadMore: current.loadMore(3) });
-      log({ again: (unsubscribe.getCurrentValue() as any).loadMore(3) });
+      log({ current: current()?.status });
+      log({ loadMore: current().loadMore(3) });
+      log({ again: current().loadMore(3) });
       await checkpoint("second page");
       server.transition([
         [
           "notes:page",
           {
             channel: "a",
-            paginationOpts: { cursor: "c1", numItems: 3, id: -1 },
+            paginationOpts: { cursor: "c1", numItems: 3, id: 1 },
           },
           { value: { page: [3, 4], isDone: true, continueCursor: "end" } },
         ],
       ]);
-      log({ exhausted: (unsubscribe.getCurrentValue() as any).loadMore(1) });
+      log({ exhausted: current().loadMore(1) });
       unsubscribe();
       await checkpoint("unsubscribed");
-      await client.close();
+      await base.close();
     });
   });
 
   test("page splits replace a page once both halves load", async () => {
-    await expectParity(async ({ impl, server, log, checkpoint }) => {
-      const client = new impl.ConvexReactClient(URL, clientOptions(server));
-      const watch = client.watchPaginatedQuery(
-        page,
+    await expectParity(async ({ impl, server, checkpoint, log }) => {
+      const { base, paginated } = paginatedClient(impl, server, log);
+      const { unsubscribe } = paginated.subscribe(
+        "notes:page",
         {},
         { initialNumItems: 2, id: 7 },
       );
-      const unsubscribe = watch.onUpdate(() => {
-        const result: any = watch.localQueryResult();
-        log({ results: result?.results, status: result?.status });
-      });
       server.open();
       await checkpoint("first page");
       server.transition([
@@ -647,37 +614,7 @@ describe("pagination", () => {
       await checkpoint("split done");
       unsubscribe();
       await checkpoint("unsubscribed");
-      await client.close();
-    });
-  });
-});
-
-describe("pagination errors", () => {
-  // ConvexClient reads the failed page outside its try, in both clients.
-  test("a failed page throws out of ConvexClient's transition", async () => {
-    await expectParity(async ({ impl, server, log, checkpoint }) => {
-      const client = new impl.ConvexClient(URL, clientOptions(server));
-      server.open();
-      client.onPaginatedUpdate_experimental(
-        page,
-        {},
-        { initialNumItems: 1 },
-        (result: any) => log({ status: result.status }),
-        (error) => log({ onError: error.message }),
-      );
-      await checkpoint("subscribed");
-      log(
-        attempt(() =>
-          server.transition([
-            [
-              "notes:page",
-              { paginationOpts: { cursor: null, numItems: 1, id: -1 } },
-              { error: "page failed" },
-            ],
-          ]),
-        ),
-      );
-      await client.close();
+      await base.close();
     });
   });
 });
@@ -856,67 +793,48 @@ describe("optimistic updates", () => {
   });
 });
 
-describe("ConvexReactClient", () => {
-  test("watchQuery, query and prewarm", async () => {
-    await expectParity(async ({ impl, server, log, checkpoint }) => {
-      const client = new impl.ConvexReactClient(URL, clientOptions(server));
-      const watch = client.watchQuery(list, {});
-      log({ beforeSync: watch.localQueryResult() });
-      const unsubscribe = watch.onUpdate(() =>
-        log({ update: watch.localQueryResult(), journal: watch.journal() }),
-      );
-      server.open();
-      await checkpoint("watching");
-      server.transition([["notes:list", {}, { value: [1], journal: "jj" }]]);
-      const once = client.query(get, { id: 1 });
-      client.prewarmQuery({ query: get, args: { id: 2 } });
-      await checkpoint("prewarmed");
-      server.transition([
-        ["notes:get", { id: 1 }, { value: "one" }],
-        ["notes:get", { id: 2 }, { value: "two" }],
-      ]);
-      log({ once: await once });
-      await vi.advanceTimersByTimeAsync(5_000);
-      await checkpoint("prewarm expired");
-      unsubscribe();
-      await checkpoint("unwatched");
-      await client.close();
-    });
-  });
-});
-
 // Where this package differs from convex@1.48.0 on purpose.
 describe("deviations", () => {
-  test("a failed page reaches watchers instead of throwing from the socket handler", async () => {
+  test("a failed page throws from localQueryResult, not from the socket handler", async () => {
     const { upstream, reatom } = await runBoth(
       async ({ impl, server, log, checkpoint }) => {
-        const client = new impl.ConvexReactClient(URL, clientOptions(server));
-        const watch = client.watchPaginatedQuery(
-          page,
-          {},
-          { initialNumItems: 1, id: 1 },
-        );
-        watch.onUpdate(() => log(attempt(() => watch.localQueryResult())));
+        const { base, paginated } = paginatedClient(impl, server, log);
+        const options = { initialNumItems: 1, id: 1 };
+        paginated.subscribe("notes:page", {}, options);
         server.open();
         await checkpoint("subscribed");
-        server.transition([
-          [
-            "notes:page",
-            { paginationOpts: { cursor: null, numItems: 1, id: 1 } },
-            { error: "page failed" },
-          ],
-        ]);
-        await client.close();
+        log(
+          attempt(() =>
+            server.transition([
+              [
+                "notes:page",
+                { paginationOpts: { cursor: null, numItems: 1, id: 1 } },
+                { error: "page failed" },
+              ],
+            ]),
+          ),
+        );
+        log(
+          attempt(() => paginated.localQueryResult("notes:page", {}, options)),
+        );
+        await base.close();
       },
     );
-    expect(upstream).toContainEqual({
-      scenarioError: expect.stringContaining("page failed"),
-    });
-    expect(reatom).toContainEqual({
+    const afterSubscribe = (trace: any[]) =>
+      trace.slice(
+        trace.findIndex((entry) => entry?.checkpoint === "subscribed") + 1,
+      );
+    const failed = {
       error: expect.stringContaining("page failed"),
       name: "Error",
       data: undefined,
-    });
+    };
+    expect(afterSubscribe(upstream)).toEqual([failed, failed]);
+    expect(afterSubscribe(reatom)).toEqual([
+      { results: undefined, status: undefined },
+      { value: undefined },
+      failed,
+    ]);
   });
 
   test("clearAuth stops the auth flow, so a scheduled refetch can't sign in again", async () => {

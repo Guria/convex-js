@@ -6,60 +6,248 @@
  * BaseConvexClient is not Convex Function type-aware: it deals
  * with queries as functions that return Value, not the specific value.
  * Use a higher-level library to get types.
- *
- * Its state lives in a {@link ReatomConvexClient}, run in the Reatom context
- * that was current when it was constructed.
  */
-import { context, noop, top, type Frame } from "@reatom/core";
-import { Value } from "../../values/index.js";
-import { parseArgs } from "../../common/index.js";
+import { version } from "../../index.js";
+import { convexToJson, Value } from "../../values/index.js";
 import {
-  BaseConvexClientOptions,
-  ConnectionState,
-  internals,
-  MutationOptions,
-  reatomConvexClient,
-  ReatomConvexClient,
-  ReatomConvexClientInternals,
-  SubscribeOptions,
-  Transition,
-} from "../reatom/client.js";
-import { functionError } from "../reatom/errors.js";
-import { FunctionResult } from "./function_result.js";
+  createHybridErrorStacktrace,
+  forwardData,
+  instantiateDefaultLogger,
+  instantiateNoopLogger,
+  logFatalError,
+  Logger,
+} from "../logging.js";
+import { LocalSyncState } from "./local_state.js";
+import { RequestManager } from "./request_manager.js";
 import {
+  OptimisticLocalStore,
+  OptimisticUpdate,
+} from "./optimistic_updates.js";
+import {
+  OptimisticQueryResults,
+  QueryResultsMap,
+} from "./optimistic_updates_impl.js";
+import {
+  ActionRequest,
+  MutationRequest,
+  QueryId,
   QueryJournal,
+  ServerMessage,
   RequestId,
   TS,
   UserIdentityAttributes,
 } from "./protocol.js";
+import { RemoteQuerySet } from "./remote_query_set.js";
 import { QueryToken, serializePathAndArgs } from "./udf_path_utils.js";
-
-export type { AuthTokenFetcher } from "../reatom/auth.js";
-import type { AuthTokenFetcher } from "../reatom/auth.js";
-export type {
-  BaseConvexClientOptions,
-  ConnectionState,
-  MutationOptions,
-  QueryModification,
-  SubscribeOptions,
-  Transition,
-} from "../reatom/client.js";
-
-let defaultFrame: Frame | undefined;
-
-const REATOM_CLIENT = Symbol("reatomClient");
+import { ReconnectMetadata, WebSocketManager } from "./web_socket_manager.js";
+import { newSessionId } from "./session.js";
+import { FunctionResult } from "./function_result.js";
+import {
+  AuthenticationManager,
+  AuthTokenFetcher,
+} from "./authentication_manager.js";
+export { type AuthTokenFetcher } from "./authentication_manager.js";
+import { getMarksReport, mark, MarkName } from "./metrics.js";
+import { parseArgs, validateDeploymentUrl } from "../../common/index.js";
+import { ConvexError } from "../../values/errors.js";
+import { jwtDecode } from "../../vendor/jwt-decode/index.js";
 
 /**
- * The root frame of the current Reatom context. Outside any frame, e.g.
- * after `clearStack()`, a context of its own.
+ * Options for {@link BaseConvexClient}.
+ *
+ * @public
  */
-function currentRootFrame(): Frame {
-  try {
-    return top().root.frame;
-  } catch {
-    return (defaultFrame ??= context.start());
-  }
+export interface BaseConvexClientOptions {
+  /**
+   * Whether to prompt the user if they have unsaved changes pending
+   * when navigating away or closing a web page.
+   *
+   * This is only possible when the `window` object exists, i.e. in a browser.
+   *
+   * The default value is `true` in browsers.
+   */
+  unsavedChangesWarning?: boolean;
+  /**
+   * Specifies an alternate
+   * [WebSocket](https://developer.mozilla.org/en-US/docs/Web/API/WebSocket)
+   * constructor to use for client communication with the Convex cloud.
+   * The default behavior is to use `WebSocket` from the global environment.
+   */
+  webSocketConstructor?: typeof WebSocket;
+  /**
+   * Adds additional logging for debugging purposes.
+   *
+   * The default value is `false`.
+   */
+  verbose?: boolean;
+  /**
+   * A logger, `true`, or `false`. If not provided or `true`, logs to the console.
+   * If `false`, logs are not printed anywhere.
+   *
+   * You can construct your own logger to customize logging to log elsewhere.
+   * A logger is an object with 4 methods: log(), warn(), error(), and logVerbose().
+   * These methods can receive multiple arguments of any types, like console.log().
+   */
+  logger?: Logger | boolean;
+  /**
+   * Sends additional metrics to Convex for debugging purposes.
+   *
+   * The default value is `false`.
+   */
+  reportDebugInfoToConvex?: boolean;
+  /**
+   * This API is experimental: it may change or disappear.
+   *
+   * A function to call on receiving abnormal WebSocket close messages from the
+   * connected Convex deployment. The content of these messages is not stable,
+   * it is an implementation detail that may change.
+   *
+   * Consider this API an observability stopgap until higher level codes with
+   * recommendations on what to do are available, which could be a more stable
+   * interface instead of `string`.
+   *
+   * Check `connectionState` for more quantitative metrics about connection status.
+   */
+  onServerDisconnectError?: (message: string) => void;
+  /**
+   * Skip validating that the Convex deployment URL looks like
+   * `https://happy-animal-123.convex.cloud` or localhost.
+   *
+   * This can be useful if running a self-hosted Convex backend that uses a different
+   * URL.
+   *
+   * The default value is `false`
+   */
+  skipConvexDeploymentUrlCheck?: boolean;
+  /**
+   * If using auth, the number of seconds before a token expires that we should refresh it.
+   *
+   * The default value is `10`.
+   */
+  authRefreshTokenLeewaySeconds?: number;
+  /**
+   * This API is experimental: it may change or disappear.
+   *
+   * Whether query, mutation, and action requests should be held back
+   * until the first auth token can be sent.
+   *
+   * Opting into this behavior works well for pages that should
+   * only be viewed by authenticated clients.
+   *
+   * Defaults to false, not waiting for an auth token.
+   */
+  expectAuth?: boolean;
+  /**
+   * This API is experimental: it may change or disappear.
+   *
+   * When true, the client reuses the initial cached auth token instead
+   * of immediately fetching a fresh one. This avoids a second
+   * Authenticate message that causes the server to re-execute all
+   * authenticated queries.
+   *
+   * The cached token's remaining lifetime is estimated using the
+   * server's clock skew measurement, and a refresh is scheduled
+   * before it expires.
+   *
+   * Defaults to false, preserving the original behavior of immediately
+   * fetching a fresh token after the cached token is confirmed.
+   */
+  initialAuthTokenReuse?: boolean;
 }
+
+/**
+ * State describing the client's connection with the Convex backend.
+ *
+ * @public
+ */
+export type ConnectionState = {
+  hasInflightRequests: boolean;
+  isWebSocketConnected: boolean;
+  timeOfOldestInflightRequest: Date | null;
+  /**
+   * True if the client has ever opened a WebSocket to the "ready" state.
+   */
+  hasEverConnected: boolean;
+  /**
+   * The number of times this client has connected to the Convex backend.
+   *
+   * A number of things can cause the client to reconnect -- server errors,
+   * bad internet, auth expiring. But this number being high is an indication
+   * that the client is having trouble keeping a stable connection.
+   */
+  connectionCount: number;
+  /**
+   * The number of times this client has tried (and failed) to connect to the Convex backend.
+   */
+  connectionRetries: number;
+  /**
+   * The number of mutations currently in flight.
+   */
+  inflightMutations: number;
+  /**
+   * The number of actions currently in flight.
+   */
+  inflightActions: number;
+};
+
+/**
+ * Options for {@link BaseConvexClient.subscribe}.
+ *
+ * @public
+ */
+export interface SubscribeOptions {
+  /**
+   * An (optional) journal produced from a previous execution of this query
+   * function.
+   *
+   * If there is an existing subscription to a query function with the same
+   * name and arguments, this journal will have no effect.
+   */
+  journal?: QueryJournal;
+
+  /**
+   * @internal
+   */
+  componentPath?: string | undefined;
+}
+
+/**
+ * Options for {@link BaseConvexClient.mutation}.
+ *
+ * @public
+ */
+export interface MutationOptions {
+  /**
+   * An optimistic update to apply along with this mutation.
+   *
+   * An optimistic update locally updates queries while a mutation is pending.
+   * Once the mutation completes, the update will be rolled back.
+   */
+  optimisticUpdate?: OptimisticUpdate<any> | undefined;
+}
+
+/**
+ * Type describing updates to a query within a `Transition`.
+ *
+ * @public
+ */
+export type QueryModification =
+  // `undefined` generally comes from an optimistic update setting the query to be loading
+  { kind: "Updated"; result: FunctionResult | undefined } | { kind: "Removed" };
+
+/**
+ * Object describing a transition passed into the `onTransition` handler.
+ *
+ * These can be from receiving a transition from the server, or from applying an
+ * optimistic update locally.
+ *
+ * @public
+ */
+export type Transition = {
+  queries: Array<{ token: QueryToken; modification: QueryModification }>;
+  reflectedMutations: Array<{ requestId: RequestId; result: FunctionResult }>;
+  timestamp: TS;
+};
 
 /**
  * Low-level client for directly integrating state management libraries
@@ -71,15 +259,28 @@ function currentRootFrame(): Frame {
  * @public
  */
 export class BaseConvexClient {
-  private readonly client: ReatomConvexClient;
-  private readonly internal: ReatomConvexClientInternals;
-  private readonly frame: Frame;
-  private readonly connectionStateSubscribers = new Map<
+  private readonly address: string;
+  private readonly state: LocalSyncState;
+  private readonly requestManager: RequestManager;
+  private readonly webSocketManager: WebSocketManager;
+  private readonly authenticationManager: AuthenticationManager;
+  private remoteQuerySet: RemoteQuerySet;
+  private readonly optimisticQueryResults: OptimisticQueryResults;
+  private _transitionHandlerCounter = 0;
+  private _nextRequestId: RequestId;
+  private _onTransitionFns: Map<number, (transition: Transition) => void> =
+    new Map();
+  private readonly _sessionId: string;
+  private firstMessageReceived = false;
+  private readonly debug: boolean;
+  private readonly logger: Logger;
+  private maxObservedTimestamp: TS | undefined;
+  private connectionStateSubscribers = new Map<
     number,
     (connectionState: ConnectionState) => void
   >();
-  private nextConnectionStateSubscriberId = 0;
-  private lastPublishedConnectionState: string | undefined;
+  private nextConnectionStateSubscriberId: number = 0;
+  private _lastPublishedConnectionState: ConnectionState | undefined;
 
   /**
    * @param address - The url of your Convex deployment, often provided
@@ -94,72 +295,330 @@ export class BaseConvexClient {
     onTransition: (updatedQueries: QueryToken[]) => void,
     options?: BaseConvexClientOptions,
   ) {
-    this.frame = currentRootFrame();
-    this.client =
-      (options as { [REATOM_CLIENT]?: ReatomConvexClient } | undefined)?.[
-        REATOM_CLIENT
-      ] ?? reatomConvexClient(address, options, "convexClient");
-    this.internal = internals(this.client);
-    this.frame.run(() => {
-      this.internal.addOnTransitionHandler((transition) => {
-        onTransition(transition.queries.map((q) => q.token));
-      });
-      this.internal.start();
-      // Published from the start, so a later subscriber waits for a change.
-      this.client.connectionState.subscribe((connectionState) =>
-        this.publishConnectionState(connectionState),
+    if (typeof address === "object") {
+      throw new Error(
+        "Passing a ClientConfig object is no longer supported. Pass the URL of the Convex deployment as a string directly.",
       );
+    }
+    if (options?.skipConvexDeploymentUrlCheck !== true) {
+      validateDeploymentUrl(address);
+    }
+    options = { ...options };
+    const authRefreshTokenLeewaySeconds =
+      options.authRefreshTokenLeewaySeconds ?? 10;
+    let webSocketConstructor = options.webSocketConstructor;
+    if (!webSocketConstructor && typeof WebSocket === "undefined") {
+      throw new Error(
+        "No WebSocket global variable defined! To use Convex in an environment without WebSocket try the HTTP client: https://docs.convex.dev/api/classes/browser.ConvexHttpClient",
+      );
+    }
+    webSocketConstructor = webSocketConstructor || WebSocket;
+    this.debug = options.reportDebugInfoToConvex ?? false;
+    this.address = address;
+    this.logger =
+      options.logger === false
+        ? instantiateNoopLogger({ verbose: options.verbose ?? false })
+        : options.logger !== true && options.logger
+          ? options.logger
+          : instantiateDefaultLogger({ verbose: options.verbose ?? false });
+    // Substitute http(s) with ws(s)
+    const i = address.search("://");
+    if (i === -1) {
+      throw new Error("Provided address was not an absolute URL.");
+    }
+    const origin = address.substring(i + 3); // move past the double slash
+    const protocol = address.substring(0, i);
+    let wsProtocol;
+    if (protocol === "http") {
+      wsProtocol = "ws";
+    } else if (protocol === "https") {
+      wsProtocol = "wss";
+    } else {
+      throw new Error(`Unknown parent protocol ${protocol}`);
+    }
+    const wsUri = `${wsProtocol}://${origin}/api/${version}/sync`;
+
+    this.state = new LocalSyncState();
+    this.remoteQuerySet = new RemoteQuerySet(
+      (queryId) => this.state.queryPath(queryId),
+      this.logger,
+    );
+    this.requestManager = new RequestManager(
+      this.logger,
+      this.markConnectionStateDirty,
+    );
+
+    // This is a callback for AuthenticationManager (which can't call
+    // this synchronously, the callback wouldn't work) so the initial
+    // pause for expectAuth we call it at the end of this constructor.
+    const pauseSocket = () => {
+      this.webSocketManager.pause();
+      this.state.pause();
+    };
+    this.authenticationManager = new AuthenticationManager(
+      this.state,
+      {
+        authenticate: (token) => {
+          const message = this.state.setAuth(token);
+          this.webSocketManager.sendMessage(message);
+          return message.baseVersion;
+        },
+        stopSocket: () => this.webSocketManager.stop(),
+        tryRestartSocket: () => this.webSocketManager.tryRestart(),
+        pauseSocket,
+        resumeSocket: () => this.webSocketManager.resume(),
+        clearAuth: () => {
+          this.clearAuth();
+        },
+      },
+      {
+        logger: this.logger,
+        refreshTokenLeewaySeconds: authRefreshTokenLeewaySeconds,
+        initialAuthTokenReuse: options.initialAuthTokenReuse ?? false,
+      },
+    );
+    this.optimisticQueryResults = new OptimisticQueryResults();
+    this.addOnTransitionHandler((transition) => {
+      onTransition(transition.queries.map((q) => q.token));
     });
-  }
+    this._nextRequestId = 0;
+    this._sessionId = newSessionId();
 
-  /**
-   * A `BaseConvexClient` over an existing Reatom client, e.g. to pass as
-   * `baseClient` to a `ConvexReactClient` that shares its connection.
-   * Construct it inside a frame of the context the Reatom client runs in.
-   */
-  static fromReatom(
-    client: ReatomConvexClient,
-    onTransition: (updatedQueries: QueryToken[]) => void = noop,
-  ): BaseConvexClient {
-    return new BaseConvexClient(client.url, onTransition, {
-      [REATOM_CLIENT]: client,
-    } as BaseConvexClientOptions);
-  }
-
-  /**
-   * The Reatom client holding this client's state.
-   *
-   * Read its atoms inside {@link BaseConvexClient.reatomFrame}.
-   */
-  get reatom(): ReatomConvexClient {
-    return this.client;
-  }
-
-  /** The root frame of the Reatom context this client runs in. */
-  get reatomFrame(): Frame {
-    return this.frame;
-  }
-
-  private run<T>(fn: () => T): T {
-    return this.frame.run(fn);
-  }
-
-  // Like the dirty flag of the connection state: publishes in a microtask,
-  // only when something changed.
-  private publishConnectionState(connectionState: ConnectionState) {
-    void Promise.resolve().then(() => {
-      const serialized = JSON.stringify(connectionState);
-      if (serialized === this.lastPublishedConnectionState) return;
-      this.lastPublishedConnectionState = serialized;
-      for (const cb of this.connectionStateSubscribers.values()) {
-        // A throwing callback stops the others but leaves the client intact.
-        cb(connectionState);
+    const { unsavedChangesWarning } = options;
+    if (
+      typeof window === "undefined" ||
+      typeof window.addEventListener === "undefined"
+    ) {
+      if (unsavedChangesWarning === true) {
+        throw new Error(
+          "unsavedChangesWarning requested, but window.addEventListener not found! Remove {unsavedChangesWarning: true} from Convex client options.",
+        );
       }
+    } else if (unsavedChangesWarning !== false) {
+      // Listen for tab close events and notify the user on unsaved changes.
+      window.addEventListener("beforeunload", (e) => {
+        if (this.requestManager.hasIncompleteRequests()) {
+          // There are 3 different ways to trigger this pop up so just try all of
+          // them.
+
+          e.preventDefault();
+          // This confirmation message doesn't actually appear in most modern
+          // browsers but we tried.
+          const confirmationMessage =
+            "Are you sure you want to leave? Your changes may not be saved.";
+          // Recommended method for legacy (IE) browsers.
+          // casts to avoid deprecation notices
+          ((e || (window as any).event) as any).returnValue =
+            confirmationMessage;
+          return confirmationMessage;
+        }
+      });
+    }
+
+    this.webSocketManager = new WebSocketManager(
+      wsUri,
+      {
+        onOpen: (reconnectMetadata: ReconnectMetadata) => {
+          // We have a new WebSocket!
+          this.mark("convexWebSocketOpen");
+          this.webSocketManager.sendMessage({
+            ...reconnectMetadata,
+            type: "Connect",
+            sessionId: this._sessionId,
+            maxObservedTimestamp: this.maxObservedTimestamp,
+          });
+
+          // Throw out our remote query, reissue queries
+          // and outstanding mutations, and reauthenticate.
+          this.remoteQuerySet = new RemoteQuerySet(
+            (queryId) => this.state.queryPath(queryId),
+            this.logger,
+          );
+          const [querySetModification, authModification] = this.state.restart();
+          if (authModification) {
+            this.webSocketManager.sendMessage(authModification);
+          }
+          this.webSocketManager.sendMessage(querySetModification);
+          for (const message of this.requestManager.restart()) {
+            this.webSocketManager.sendMessage(message);
+          }
+        },
+        onResume: () => {
+          const [querySetModification, authModification] = this.state.resume();
+          if (authModification) {
+            this.webSocketManager.sendMessage(authModification);
+          }
+          if (querySetModification) {
+            this.webSocketManager.sendMessage(querySetModification);
+          }
+          for (const message of this.requestManager.resume()) {
+            this.webSocketManager.sendMessage(message);
+          }
+        },
+        onMessage: (serverMessage: ServerMessage) => {
+          // Metrics events grow linearly with reconnection attempts so this
+          // conditional prevents n^2 metrics reporting.
+          if (!this.firstMessageReceived) {
+            this.firstMessageReceived = true;
+            this.mark("convexFirstMessageReceived");
+            this.reportMarks();
+          }
+          switch (serverMessage.type) {
+            case "Transition": {
+              this.observedTimestamp(serverMessage.endVersion.ts);
+              this.authenticationManager.onTransition(serverMessage);
+              this.remoteQuerySet.transition(serverMessage);
+              this.state.transition(serverMessage);
+              const completedRequests = this.requestManager.removeCompleted(
+                this.remoteQuerySet.timestamp(),
+              );
+              this.notifyOnQueryResultChanges(completedRequests);
+              break;
+            }
+            case "MutationResponse": {
+              if (serverMessage.success) {
+                this.observedTimestamp(serverMessage.ts);
+              }
+              const completedMutationInfo =
+                this.requestManager.onResponse(serverMessage);
+              if (completedMutationInfo !== null) {
+                this.notifyOnQueryResultChanges(
+                  new Map([
+                    [
+                      completedMutationInfo.requestId,
+                      completedMutationInfo.result,
+                    ],
+                  ]),
+                );
+              }
+              break;
+            }
+            case "ActionResponse": {
+              this.requestManager.onResponse(serverMessage);
+              break;
+            }
+            case "AuthError": {
+              this.authenticationManager.onAuthError(serverMessage);
+              break;
+            }
+            case "FatalError": {
+              const error = logFatalError(this.logger, serverMessage.error);
+              void this.webSocketManager.terminate();
+              throw error;
+            }
+            default: {
+              serverMessage satisfies never;
+            }
+          }
+
+          return {
+            hasSyncedPastLastReconnect: this.hasSyncedPastLastReconnect(),
+          };
+        },
+        onServerDisconnectError: options.onServerDisconnectError,
+      },
+      webSocketConstructor,
+      this.logger,
+      this.markConnectionStateDirty,
+      this.debug,
+    );
+    this.mark("convexClientConstructed");
+
+    // Begin client in a paused state waiting for an auth token.
+    if (options.expectAuth) {
+      pauseSocket();
+    }
+  }
+
+  /**
+   * Return true if there is outstanding work from prior to the time of the most recent restart.
+   * This indicates that the client has not proven itself to have gotten past the issue that
+   * potentially led to the restart. Use this to influence when to reset backoff after a failure.
+   */
+  private hasSyncedPastLastReconnect() {
+    const hasSyncedPastLastReconnect =
+      this.requestManager.hasSyncedPastLastReconnect() &&
+      this.state.hasSyncedPastLastReconnect();
+    return hasSyncedPastLastReconnect;
+  }
+
+  private observedTimestamp(observedTs: TS) {
+    if (
+      this.maxObservedTimestamp === undefined ||
+      this.maxObservedTimestamp.lessThanOrEqual(observedTs)
+    ) {
+      this.maxObservedTimestamp = observedTs;
+    }
+  }
+
+  getMaxObservedTimestamp() {
+    return this.maxObservedTimestamp;
+  }
+
+  /**
+   * Compute the current query results based on the remoteQuerySet and the
+   * current optimistic updates and call `onTransition` for all the changed
+   * queries.
+   *
+   * @param completedMutations - A set of mutation IDs whose optimistic updates
+   * are no longer needed.
+   */
+  private notifyOnQueryResultChanges(
+    completedRequests: Map<RequestId, FunctionResult>,
+  ) {
+    const remoteQueryResults: Map<QueryId, FunctionResult> =
+      this.remoteQuerySet.remoteQueryResults();
+    const queryTokenToValue: QueryResultsMap = new Map();
+    for (const [queryId, result] of remoteQueryResults) {
+      const queryToken = this.state.queryToken(queryId);
+      // It's possible that we've already unsubscribed to this query but
+      // the server hasn't learned about that yet. If so, ignore this one.
+
+      if (queryToken !== null) {
+        const query = {
+          result,
+          udfPath: this.state.queryPath(queryId)!,
+          args: this.state.queryArgs(queryId)!,
+        };
+        queryTokenToValue.set(queryToken, query);
+      }
+    }
+
+    // Query tokens that are new (because of new server results or new local optimistic updates)
+    // or differ from old values (because of changes from local optimistic updates or new results
+    // from the server).
+    const changedQueryTokens =
+      this.optimisticQueryResults.ingestQueryResultsFromServer(
+        queryTokenToValue,
+        new Set(completedRequests.keys()),
+      );
+
+    this.handleTransition({
+      queries: changedQueryTokens.map((token) => {
+        const optimisticResult =
+          this.optimisticQueryResults.rawQueryResult(token);
+        return {
+          token,
+          modification: {
+            kind: "Updated" as const,
+            result: optimisticResult,
+          },
+        };
+      }),
+      reflectedMutations: Array.from(completedRequests).map(
+        ([requestId, result]) => ({
+          requestId,
+          result,
+        }),
+      ),
+      timestamp: this.remoteQuerySet.timestamp(),
     });
   }
 
-  getMaxObservedTimestamp(): TS | undefined {
-    return this.run(() => this.internal.maxObservedTimestamp());
+  private handleTransition(transition: Transition) {
+    for (const fn of this._onTransitionFns.values()) {
+      fn(transition);
+    }
   }
 
   /**
@@ -172,7 +631,9 @@ export class BaseConvexClient {
    * @returns
    */
   addOnTransitionHandler(fn: (transition: Transition) => void) {
-    return this.run(() => this.internal.addOnTransitionHandler(fn));
+    const id = this._transitionHandlerCounter++;
+    this._onTransitionFns.set(id, fn);
+    return () => this._onTransitionFns.delete(id);
   }
 
   /**
@@ -181,7 +642,18 @@ export class BaseConvexClient {
   getCurrentAuthClaims():
     | { token: string; decoded: Record<string, any> }
     | undefined {
-    return this.run(() => this.client.authClaims());
+    const authToken = this.state.getAuth();
+    let decoded: Record<string, any> = {};
+    if (authToken && authToken.tokenType === "User") {
+      try {
+        decoded = authToken ? jwtDecode(authToken.value) : {};
+      } catch {
+        decoded = {};
+      }
+    } else {
+      return undefined;
+    }
+    return { token: authToken.value, decoded };
   }
 
   /**
@@ -198,20 +670,26 @@ export class BaseConvexClient {
     onChange: (isAuthenticated: boolean) => void,
     onRefreshChange?: (isRefreshing: boolean) => void,
   ) {
-    this.run(() => this.client.setAuth(fetchToken, onChange, onRefreshChange));
+    void this.authenticationManager.setConfig(
+      fetchToken,
+      onChange,
+      onRefreshChange,
+    );
   }
 
   hasAuth() {
-    return this.run(() => this.internal.hasAuth());
+    return this.state.hasAuth();
   }
 
   /** @internal */
   setAdminAuth(value: string, fakeUserIdentity?: UserIdentityAttributes) {
-    this.run(() => this.internal.setAdminAuth(value, fakeUserIdentity));
+    const message = this.state.setAdminAuth(value, fakeUserIdentity);
+    this.webSocketManager.sendMessage(message);
   }
 
   clearAuth() {
-    this.run(() => this.client.clearAuth());
+    const message = this.state.clearAuth();
+    this.webSocketManager.sendMessage(message);
   }
 
   /**
@@ -234,14 +712,25 @@ export class BaseConvexClient {
     options?: SubscribeOptions,
   ): { queryToken: QueryToken; unsubscribe: () => void } {
     const argsObject = parseArgs(args);
-    return this.run(() => {
-      const entry = this.internal.queryEntry(name, argsObject, options);
-      const release = this.internal.retainQuery(entry);
-      return {
-        queryToken: entry.token,
-        unsubscribe: () => this.run(release),
-      };
-    });
+
+    const { modification, queryToken, unsubscribe } = this.state.subscribe(
+      name,
+      argsObject,
+      options?.journal,
+      options?.componentPath,
+    );
+    if (modification !== null) {
+      this.webSocketManager.sendMessage(modification);
+    }
+    return {
+      queryToken,
+      unsubscribe: () => {
+        const modification = unsubscribe();
+        if (modification) {
+          this.webSocketManager.sendMessage(modification);
+        }
+      },
+    };
   }
 
   /**
@@ -254,9 +743,9 @@ export class BaseConvexClient {
     udfPath: string,
     args?: Record<string, Value>,
   ): Value | undefined {
-    return this.localQueryResultByToken(
-      serializePathAndArgs(udfPath, parseArgs(args)),
-    );
+    const argsObject = parseArgs(args);
+    const queryToken = serializePathAndArgs(udfPath, argsObject);
+    return this.optimisticQueryResults.queryResult(queryToken);
   }
 
   /**
@@ -268,7 +757,7 @@ export class BaseConvexClient {
    * @internal
    */
   localQueryResultByToken(queryToken: QueryToken): Value | undefined {
-    return this.run(() => this.internal.localQueryResultByToken(queryToken));
+    return this.optimisticQueryResults.queryResult(queryToken);
   }
 
   /**
@@ -279,7 +768,7 @@ export class BaseConvexClient {
    * @internal
    */
   hasLocalQueryResultByToken(queryToken: QueryToken): boolean {
-    return this.run(() => this.internal.hasLocalQueryResultByToken(queryToken));
+    return this.optimisticQueryResults.hasQueryResult(queryToken);
   }
 
   /**
@@ -289,10 +778,9 @@ export class BaseConvexClient {
     udfPath: string,
     args?: Record<string, Value>,
   ): string[] | undefined {
-    const queryToken = serializePathAndArgs(udfPath, parseArgs(args));
-    return this.run(
-      () => this.internal.rawQueryResultByToken(queryToken)?.logLines,
-    );
+    const argsObject = parseArgs(args);
+    const queryToken = serializePathAndArgs(udfPath, argsObject);
+    return this.optimisticQueryResults.queryLogs(queryToken);
   }
 
   /**
@@ -308,8 +796,9 @@ export class BaseConvexClient {
     name: string,
     args?: Record<string, Value>,
   ): QueryJournal | undefined {
-    const queryToken = serializePathAndArgs(name, parseArgs(args));
-    return this.run(() => this.internal.queryJournal(queryToken));
+    const argsObject = parseArgs(args);
+    const queryToken = serializePathAndArgs(name, argsObject);
+    return this.state.queryJournal(queryToken);
   }
 
   /**
@@ -319,8 +808,40 @@ export class BaseConvexClient {
    * @returns The {@link ConnectionState} with the Convex backend.
    */
   connectionState(): ConnectionState {
-    return this.run(() => this.client.connectionState());
+    const wsConnectionState = this.webSocketManager.connectionState();
+    return {
+      hasInflightRequests: this.requestManager.hasInflightRequests(),
+      isWebSocketConnected: wsConnectionState.isConnected,
+      hasEverConnected: wsConnectionState.hasEverConnected,
+      connectionCount: wsConnectionState.connectionCount,
+      connectionRetries: wsConnectionState.connectionRetries,
+      timeOfOldestInflightRequest:
+        this.requestManager.timeOfOldestInflightRequest(),
+      inflightMutations: this.requestManager.inflightMutations(),
+      inflightActions: this.requestManager.inflightActions(),
+    };
   }
+
+  /**
+   * Call this whenever the connection state may have changed in a way that could
+   * require publishing it. Schedules a possibly update.
+   */
+  private markConnectionStateDirty = () => {
+    void Promise.resolve().then(() => {
+      const curConnectionState = this.connectionState();
+      if (
+        JSON.stringify(curConnectionState) !==
+        JSON.stringify(this._lastPublishedConnectionState)
+      ) {
+        this._lastPublishedConnectionState = curConnectionState;
+        for (const cb of this.connectionStateSubscribers.values()) {
+          // One of these callback throwing will prevent other callbacks
+          // from running but will not leave the client in a undefined state.
+          cb(curConnectionState);
+        }
+      }
+    });
+  };
 
   /**
    * Subscribe to the {@link ConnectionState} between the client and the Convex
@@ -358,7 +879,17 @@ export class BaseConvexClient {
     options?: MutationOptions,
   ): Promise<any> {
     const result = await this.mutationInternal(name, args, options);
-    if (!result.success) throw functionError("mutation", name, result);
+    if (!result.success) {
+      if (result.errorData !== undefined) {
+        throw forwardData(
+          result,
+          new ConvexError(
+            createHybridErrorStacktrace("mutation", name, result),
+          ),
+        );
+      }
+      throw new Error(createHybridErrorStacktrace("mutation", name, result));
+    }
     return result.value;
   }
 
@@ -389,9 +920,70 @@ export class BaseConvexClient {
     options?: MutationOptions,
     componentPath?: string,
   ): { requestId: RequestId; mutationPromise: Promise<FunctionResult> } {
-    return this.run(() =>
-      this.internal.enqueueMutation(udfPath, args, options, componentPath),
-    );
+    const mutationArgs = parseArgs(args);
+    this.tryReportLongDisconnect();
+    const requestId = this.nextRequestId;
+    this._nextRequestId++;
+
+    if (options !== undefined) {
+      const optimisticUpdate = options.optimisticUpdate;
+      if (optimisticUpdate !== undefined) {
+        const wrappedUpdate = (localQueryStore: OptimisticLocalStore) => {
+          const result: unknown = optimisticUpdate(
+            localQueryStore,
+            mutationArgs,
+          );
+          if (result instanceof Promise) {
+            this.logger.warn(
+              "Optimistic update handler returned a Promise. Optimistic updates should be synchronous.",
+            );
+          }
+        };
+
+        const changedQueryTokens =
+          this.optimisticQueryResults.applyOptimisticUpdate(
+            wrappedUpdate,
+            requestId,
+          );
+
+        const changedQueries = changedQueryTokens.map((token) => {
+          const localResult = this.localQueryResultByToken(token);
+          return {
+            token,
+            modification: {
+              kind: "Updated" as const,
+              result:
+                localResult === undefined
+                  ? undefined
+                  : {
+                      success: true as const,
+                      value: localResult,
+                      logLines: [],
+                    },
+            },
+          };
+        });
+        this.handleTransition({
+          queries: changedQueries,
+          reflectedMutations: [],
+          timestamp: this.remoteQuerySet.timestamp(),
+        });
+      }
+    }
+
+    const message: MutationRequest = {
+      type: "Mutation",
+      requestId,
+      udfPath,
+      componentPath,
+      args: [convexToJson(mutationArgs)],
+    };
+    const mightBeSent = this.webSocketManager.sendMessage(message);
+    const mutationPromise = this.requestManager.request(message, mightBeSent);
+    return {
+      requestId,
+      mutationPromise,
+    };
   }
 
   /**
@@ -404,7 +996,15 @@ export class BaseConvexClient {
    */
   async action(name: string, args?: Record<string, Value>): Promise<any> {
     const result = await this.actionInternal(name, args);
-    if (!result.success) throw functionError("action", name, result);
+    if (!result.success) {
+      if (result.errorData !== undefined) {
+        throw forwardData(
+          result,
+          new ConvexError(createHybridErrorStacktrace("action", name, result)),
+        );
+      }
+      throw new Error(createHybridErrorStacktrace("action", name, result));
+    }
     return result.value;
   }
 
@@ -416,9 +1016,21 @@ export class BaseConvexClient {
     args?: Record<string, Value>,
     componentPath?: string,
   ): Promise<FunctionResult> {
-    return this.run(() =>
-      this.internal.actionInternal(udfPath, args, componentPath),
-    );
+    const actionArgs = parseArgs(args);
+    const requestId = this.nextRequestId;
+    this._nextRequestId++;
+    this.tryReportLongDisconnect();
+
+    const message: ActionRequest = {
+      type: "Action",
+      requestId,
+      udfPath,
+      componentPath,
+      args: [convexToJson(actionArgs)],
+    };
+
+    const mightBeSent = this.webSocketManager.sendMessage(message);
+    return this.requestManager.request(message, mightBeSent);
   }
 
   /**
@@ -430,7 +1042,8 @@ export class BaseConvexClient {
    * @returns A `Promise` fulfilled when the connection has been completely closed.
    */
   async close(): Promise<void> {
-    return this.run(() => this.client.close());
+    this.authenticationManager.stop();
+    return this.webSocketManager.terminate();
   }
 
   /**
@@ -440,21 +1053,77 @@ export class BaseConvexClient {
    * it may be canonicalized.
    */
   get url() {
-    return this.client.url;
+    return this.address;
   }
 
   /**
    * @internal
    */
   get nextRequestId() {
-    return this.run(() => this.internal.nextRequestId());
+    return this._nextRequestId;
   }
 
   /**
    * @internal
    */
   get sessionId() {
-    return this.run(() => this.internal.sessionId());
+    return this._sessionId;
+  }
+
+  // Instance property so that `mark()` doesn't need to be called as a method.
+  private mark = (name: MarkName) => {
+    if (this.debug) {
+      mark(name, this.sessionId);
+    }
+  };
+
+  /**
+   * Reports performance marks to the server. This should only be called when
+   * we have a functional websocket.
+   */
+  private reportMarks() {
+    if (this.debug) {
+      const report = getMarksReport(this.sessionId);
+      this.webSocketManager.sendMessage({
+        type: "Event",
+        eventType: "ClientConnect",
+        event: report,
+      });
+    }
+  }
+
+  private tryReportLongDisconnect() {
+    if (!this.debug) {
+      return;
+    }
+    const timeOfOldestRequest =
+      this.connectionState().timeOfOldestInflightRequest;
+    if (
+      timeOfOldestRequest === null ||
+      Date.now() - timeOfOldestRequest.getTime() <= 60 * 1000
+    ) {
+      return;
+    }
+    const endpoint = `${this.address}/api/debug_event`;
+    fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Convex-Client": `npm-${version}`,
+      },
+      body: JSON.stringify({ event: "LongWebsocketDisconnect" }),
+    })
+      .then((response) => {
+        if (!response.ok) {
+          this.logger.warn(
+            "Analytics request failed with response:",
+            response.body,
+          );
+        }
+      })
+      .catch((error) => {
+        this.logger.warn("Analytics response failed with error:", error);
+      });
   }
 }
 
