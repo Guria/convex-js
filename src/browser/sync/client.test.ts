@@ -157,6 +157,44 @@ test("sends the query set edits of one microtask as one message", async () => {
   });
 });
 
+test("sends the args a query had when subscribed", async () => {
+  await withClient(async ({ client, receive }) => {
+    const args = { value: "a" };
+    client.subscribe("test:echo", args);
+    args.value = "b";
+
+    expect(await receive()).toMatchObject({
+      modifications: [{ type: "Add", queryId: 0, args: [{ value: "a" }] }],
+    });
+  });
+});
+
+test("sends a subscribe and unsubscribe of one microtask together", async () => {
+  await withClient(async ({ client, server, receive }) => {
+    const a = client.subscribe("test:echo", { value: "a" });
+    a.unsubscribe();
+    client.subscribe("test:count", {});
+
+    expect(await receive()).toMatchObject({
+      baseVersion: 1,
+      newVersion: 4,
+      modifications: [
+        { type: "Add", queryId: 0 },
+        { type: "Remove", queryId: 0 },
+        { type: "Add", queryId: 1 },
+      ],
+    });
+    server.transition([updated(1, 0)], { querySet: 4 });
+    await vi.waitFor(() =>
+      expect(client.localQueryResult("test:count", {})).toBe(0),
+    );
+    expect(client.hasLocalQueryResultByToken(a.queryToken)).toBe(false);
+    expect(client.localQueryResult("test:echo", { value: "a" })).toBe(
+      undefined,
+    );
+  });
+});
+
 test("sends queued query set edits before a later message", async () => {
   await withClient(async ({ client, server, receive }) => {
     client.subscribe("test:count", {});
