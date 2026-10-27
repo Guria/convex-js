@@ -959,4 +959,37 @@ describe("deviations", () => {
     });
     expect(afterClear(reatom)).toEqual(["cleared", { hasAuth: false }]);
   });
+
+  test("results stay visible across a reconnect until the server answers", async () => {
+    const { upstream, reatom } = await runBoth(
+      async ({ impl, server, log, checkpoint, settle }) => {
+        const client = new impl.BaseConvexClient(
+          URL,
+          () => {},
+          clientOptions(server),
+        );
+        server.open();
+        client.subscribe("notes:list", {});
+        client.subscribe("notes:get", { id: 1 });
+        await checkpoint("subscribed");
+        server.transition([
+          ["notes:list", {}, { value: ["a"] }],
+          ["notes:get", { id: 1 }, { value: "one" }],
+        ]);
+        server.drop();
+        await settle();
+        await vi.advanceTimersByTimeAsync(1500);
+        server.open();
+        await settle();
+        server.transition([["notes:list", {}, { value: ["b"] }]]);
+        log({
+          list: client.localQueryResult("notes:list", {}),
+          get: client.localQueryResult("notes:get", { id: 1 }),
+        });
+        await client.close();
+      },
+    );
+    expect(upstream.at(-1)).toEqual({ list: ["b"], get: undefined });
+    expect(reatom.at(-1)).toEqual({ list: ["b"], get: "one" });
+  });
 });
