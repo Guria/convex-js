@@ -9,6 +9,8 @@ import {
   readFakeJwt,
 } from "./client_node_test_helpers.js";
 import { ClientMessage } from "./protocol.js";
+import { ConvexClient } from "../simple_client.js";
+import { clearStack, STACK } from "@reatom/core";
 
 const listRef = makeFunctionReference<"query">("messages:list");
 const otherRef = makeFunctionReference<"query">("messages:other");
@@ -145,6 +147,35 @@ describe("subscriptions", () => {
     unsubscribe();
     await server.settled();
     expect(querySetChanges(server, before)).toHaveLength(0);
+  });
+
+  test("subscriptions dropped in the same tick leave nothing behind", async () => {
+    const { server, client } = setup(messagesStore());
+    await server.settled();
+    for (let i = 0; i < 100; i++) {
+      client.subscribe("messages:list", { i }).unsubscribe();
+    }
+    await server.settled();
+    const state = (client as any).state;
+    expect(state.entries.size).toBe(0);
+    expect(state.retired.size).toBe(0);
+  });
+
+  test("the arguments are captured when subscribing", async () => {
+    const { server, client } = setup({
+      queries: { "q:echo": (_ctx, args) => args },
+    });
+    const args = { id: "a" };
+    const first = client.subscribe("q:echo", args);
+    args.id = "b";
+    const second = client.subscribe("q:echo", args);
+    await server.settled();
+    expect(client.localQueryResultByToken(first.queryToken)).toEqual({
+      id: "a",
+    });
+    expect(client.localQueryResultByToken(second.queryToken)).toEqual({
+      id: "b",
+    });
   });
 
   test("resubscribing in the same tick keeps the result and the server subscription", async () => {
@@ -792,5 +823,32 @@ describe("close", () => {
     await server.settled();
     expect(server.connectionCount()).toBe(0);
     expect(client.connectionState().isWebSocketConnected).toBe(false);
+  });
+});
+
+describe("Reatom context", () => {
+  test("clients work with an empty Reatom stack", async () => {
+    const saved = [...STACK];
+    clearStack();
+    try {
+      const { server, client } = setup(messagesStore());
+      expect(client.connectionState().isWebSocketConnected).toBe(false);
+      client.subscribe("messages:list", {});
+      await server.settled();
+      await client.mutation("messages:send", { body: "x" });
+      expect(client.localQueryResult("messages:list", {})).toEqual(["x"]);
+
+      const simple = new ConvexClient("http://127.0.0.1:8000", {
+        webSocketConstructor: server.WebSocket,
+        unsavedChangesWarning: false,
+        logger: false,
+      });
+      expect(simple.closed).toBe(false);
+      await expect(simple.query(listRef, {})).resolves.toEqual(["x"]);
+      await simple.close();
+      expect(simple.closed).toBe(true);
+    } finally {
+      STACK.push(...saved);
+    }
   });
 });
