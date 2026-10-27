@@ -1,13 +1,18 @@
 {
-  "name": "convex",
-  "description": "Client for the Convex Cloud",
+  "name": "reatom-convex",
+  "description": "The convex package with its sync client state in Reatom atoms",
   "version": "1.48.0",
   "author": "Convex, Inc. <no-reply@convex.dev>",
-  "homepage": "https://convex.dev",
+  "contributors": [
+    "Aleksei Gurianov <gurianov@gmail.com>"
+  ],
+  "homepage": "https://github.com/Guria/reatom-convex/blob/reatom/REATOM.md",
+  "bugs": {
+    "url": "https://github.com/Guria/reatom-convex/issues"
+  },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/convex/convex-backend.git",
-    "directory": "npm-packages/convex"
+    "url": "git+https://github.com/Guria/reatom-convex.git"
   },
   "main": "./dist/cjs/index.js",
   "module": "./dist/esm/index.js",
@@ -232,6 +237,7 @@
   ],
   "keywords": [
     "convex",
+    "reatom",
     "database",
     "react",
     "state",
