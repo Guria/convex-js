@@ -1,4 +1,4 @@
-import type { Value } from "../values/value.js";
+import type { Value } from "convex/values";
 
 /**
  * Validate that the arguments to a Convex function are an object, defaulting

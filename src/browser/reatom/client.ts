@@ -32,9 +32,9 @@ import {
   FunctionReference_future,
   FunctionReturnType,
   getFunctionName,
-} from "../../server/api.js";
-import { UserIdentityAttributes } from "../../server/authentication.js";
-import { convexToJson, jsonToConvex, Value } from "../../values/index.js";
+} from "convex/server";
+import { UserIdentityAttributes } from "convex/server";
+import { convexToJson, jsonToConvex, Value } from "convex/values";
 import { jwtDecode } from "../../vendor/jwt-decode/index.js";
 import { Long } from "../../vendor/long.js";
 import {
@@ -50,10 +50,7 @@ import {
   mark as markPerformance,
   MarkName,
 } from "../sync/metrics.js";
-import {
-  OptimisticLocalStore,
-  OptimisticUpdate,
-} from "../sync/optimistic_updates.js";
+import { OptimisticLocalStore, OptimisticUpdate } from "convex/browser";
 import {
   ActionRequest,
   ActionResponse,

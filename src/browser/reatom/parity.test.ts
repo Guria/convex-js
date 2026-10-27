@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
-import { makeFunctionReference } from "../../server/api.js";
+import { makeFunctionReference } from "convex/server";
 import type { BaseConvexClient } from "../sync/client.js";
-import type { OptimisticLocalStore } from "../sync/optimistic_updates.js";
+import type { OptimisticLocalStore } from "convex/browser";
 import {
   attempt,
   caught,

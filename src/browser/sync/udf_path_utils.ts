@@ -1,4 +1,4 @@
-import { convexToJson, Value } from "../../values/index.js";
+import { convexToJson, Value } from "convex/values";
 
 export function canonicalizeUdfPath(udfPath: string): string {
   const pieces = udfPath.split(":");

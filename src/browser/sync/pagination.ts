@@ -1,6 +1,6 @@
-import type { PaginationResult } from "../../server/index.js";
-import type { Infer, Value } from "../../values/index.js";
-import type { paginationOptsValidator } from "../../server/index.js";
+import type { PaginationResult } from "convex/server";
+import type { Infer, Value } from "convex/values";
+import type { paginationOptsValidator } from "convex/server";
 
 export type PaginationStatus =
   | "LoadingFirstPage"

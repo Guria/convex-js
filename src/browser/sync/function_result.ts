@@ -1,4 +1,4 @@
-import { Value } from "../../values/index.js";
+import { Value } from "convex/values";
 
 /**
  * The result of running a function on the server.

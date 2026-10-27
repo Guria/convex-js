@@ -1,6 +1,6 @@
-import type { UserIdentityAttributes } from "../../server/authentication.js";
-export type { UserIdentityAttributes } from "../../server/authentication.js";
-import { JSONValue, Base64 } from "../../values/index.js";
+import type { UserIdentityAttributes } from "convex/server";
+export type { UserIdentityAttributes } from "convex/server";
+import { JSONValue, Base64 } from "convex/values";
 import { Long } from "../../vendor/long.js";
 
 /**

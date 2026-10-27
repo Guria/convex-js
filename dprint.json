@@ -1,5 +1,5 @@
 {
-  "excludes": ["dist/", "staged/", "src/vendor", "package-lock.json"],
+  "excludes": ["dist/", "src/vendor", "package-lock.json"],
   "prettier": {
     "proseWrap": "always",
     "trailingComma": "all"

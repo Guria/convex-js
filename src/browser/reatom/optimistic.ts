@@ -10,11 +10,11 @@ import {
   FunctionReturnType,
   getFunctionName,
   OptionalRestArgs,
-} from "../../server/api.js";
+} from "convex/server";
 import { parseArgs } from "../../common/index.js";
-import { Value } from "../../values/index.js";
+import { Value } from "convex/values";
 import { FunctionResult } from "../sync/function_result.js";
-import { OptimisticLocalStore } from "../sync/optimistic_updates.js";
+import { OptimisticLocalStore } from "convex/browser";
 import { RequestId } from "../sync/protocol.js";
 import {
   canonicalizeUdfPath,

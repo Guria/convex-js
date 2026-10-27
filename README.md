@@ -102,7 +102,8 @@ has the full table and how it was measured.
 
 The repository is a fork of
 [convex/convex-js](https://github.com/convex/convex-js) cut down to this client
-and the upstream sources it reuses.
+and the upstream sync helpers it reuses. Server and value utilities are imported
+directly from the official `convex` peer in both source and builds.
 [CONTRIBUTING.md](https://github.com/reatomized/convex/blob/reatom/CONTRIBUTING.md)
 covers the layout, the parity tests against upstream's client, syncing with
 upstream, and releases.

@@ -16,7 +16,7 @@ import {
   type AtomLike,
   type Computed,
 } from "@reatom/core";
-import { Value } from "../../values/index.js";
+import { Value } from "convex/values";
 import { FunctionResult } from "../sync/function_result.js";
 import { asPaginationResult, PaginationStatus } from "../sync/pagination.js";
 import {

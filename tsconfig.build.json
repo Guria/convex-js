@@ -1,11 +1,10 @@
 {
-  "include": ["staged"],
   "compilerOptions": {
     "target": "es2022",
     "module": "es2020",
     "moduleResolution": "bundler",
     "lib": ["es2022", "dom"],
-    "rootDir": "./staged",
+    "rootDir": "./src",
     "outDir": "./dist",
     "declaration": true,
     "stripInternal": true,
@@ -15,5 +14,6 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "types": []
-  }
+  },
+  "files": ["src/browser/reatom/index.ts"]
 }

@@ -1,5 +1,5 @@
 /* eslint-disable no-console */ // This is the one file where we can `console.log` for the default logger implementation.
-import { ConvexError, Value } from "../values/index.js";
+import { ConvexError, Value } from "convex/values";
 import { FunctionFailure } from "./sync/function_result.js";
 
 // This is blue #9 from https://www.radix-ui.com/docs/colors/palette-composition/the-scales

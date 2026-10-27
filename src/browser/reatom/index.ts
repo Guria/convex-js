@@ -1,4 +1,4 @@
-// The entry point of the @reatomized/convex package, built by reatomized/build.mjs.
+// The entry point of the @reatomized/convex package, built by scripts/build.mjs.
 export { reatomConvexClient } from "./client.js";
 export type {
   BaseConvexClientOptions as ReatomConvexClientOptions,
@@ -14,4 +14,4 @@ export type {
 export type { AuthTokenFetcher } from "./auth.js";
 export type { PaginatedQueryState, ReatomPaginatedQuery } from "./paginated.js";
 export type { SocketState } from "./socket.js";
-export type { OptimisticLocalStore } from "../sync/optimistic_updates.js";
+export type { OptimisticLocalStore } from "convex/browser";

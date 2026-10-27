@@ -5,9 +5,9 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 // Lints the Reatom client and the scripts. The other files under src/ are
-// upstream's, synced verbatim.
+// upstream's, with public Convex peer imports.
 export default [
-  { ignores: ["dist", "staged", "node_modules"] },
+  { ignores: ["dist", "node_modules"] },
   js.configs.recommended,
   {
     files: ["scripts/**/*.mjs"],

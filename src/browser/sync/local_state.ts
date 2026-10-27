@@ -10,7 +10,7 @@
  * - any query results at all
  **/
 
-import { convexToJson, Value } from "../../values/index.js";
+import { convexToJson, Value } from "convex/values";
 import {
   AddQuery,
   RemoveQuery,

@@ -1,4 +1,4 @@
-import { jsonToConvex } from "../../values/index.js";
+import { jsonToConvex } from "convex/values";
 import { logForFunction, Logger } from "../logging.js";
 import { Long } from "../../vendor/long.js";
 import { FunctionResult } from "./function_result.js";

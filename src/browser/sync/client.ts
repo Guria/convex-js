@@ -8,7 +8,7 @@
  * Use a higher-level library to get types.
  */
 import { version } from "../../index.js";
-import { convexToJson, Value } from "../../values/index.js";
+import { convexToJson, Value } from "convex/values";
 import {
   createHybridErrorStacktrace,
   forwardData,
@@ -19,10 +19,7 @@ import {
 } from "../logging.js";
 import { LocalSyncState } from "./local_state.js";
 import { RequestManager } from "./request_manager.js";
-import {
-  OptimisticLocalStore,
-  OptimisticUpdate,
-} from "./optimistic_updates.js";
+import { OptimisticLocalStore, OptimisticUpdate } from "convex/browser";
 import {
   OptimisticQueryResults,
   QueryResultsMap,
@@ -49,7 +46,7 @@ import {
 export { type AuthTokenFetcher } from "./authentication_manager.js";
 import { getMarksReport, mark, MarkName } from "./metrics.js";
 import { parseArgs, validateDeploymentUrl } from "../../common/index.js";
-import { ConvexError } from "../../values/errors.js";
+import { ConvexError } from "convex/values";
 import { jwtDecode } from "../../vendor/jwt-decode/index.js";
 
 /**

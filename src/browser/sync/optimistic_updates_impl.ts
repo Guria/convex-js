@@ -5,19 +5,19 @@ import {
   getFunctionName,
   FunctionReference,
   FunctionReference_future,
-} from "../../server/api.js";
+} from "convex/server";
 import { parseArgs } from "../../common/index.js";
-import { Value } from "../../values/index.js";
+import { Value } from "convex/values";
 import { createHybridErrorStacktrace, forwardData } from "../logging.js";
 import { FunctionResult } from "./function_result.js";
-import { OptimisticLocalStore } from "./optimistic_updates.js";
+import { OptimisticLocalStore } from "convex/browser";
 import { RequestId } from "./protocol.js";
 import {
   canonicalizeUdfPath,
   QueryToken,
   serializePathAndArgs,
 } from "./udf_path_utils.js";
-import { ConvexError } from "../../values/errors.js";
+import { ConvexError } from "convex/values";
 
 /**
  * An optimistic update function that has been curried over its arguments.

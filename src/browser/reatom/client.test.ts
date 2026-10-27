@@ -8,8 +8,8 @@ import {
   test,
   vi,
 } from "vitest";
-import { makeFunctionReference } from "../../server/api.js";
-import { ConvexError } from "../../values/errors.js";
+import { makeFunctionReference } from "convex/server";
+import { ConvexError } from "convex/values";
 import {
   internals,
   reatomConvexClient,

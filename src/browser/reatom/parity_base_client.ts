@@ -6,7 +6,7 @@
  * It runs in the Reatom context that was current when it was constructed.
  */
 import { context, top, type Frame } from "@reatom/core";
-import { Value } from "../../values/index.js";
+import { Value } from "convex/values";
 import { parseArgs } from "../../common/index.js";
 import {
   BaseConvexClientOptions,

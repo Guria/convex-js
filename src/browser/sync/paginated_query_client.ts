@@ -10,7 +10,7 @@
  * Use a higher-level library to get types.
  */
 
-import { Value } from "../../values/index.js";
+import { Value } from "convex/values";
 import {
   PaginatedQueryToken,
   QueryToken,

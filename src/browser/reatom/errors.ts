@@ -1,4 +1,4 @@
-import { ConvexError } from "../../values/errors.js";
+import { ConvexError } from "convex/values";
 import { createHybridErrorStacktrace, forwardData } from "../logging.js";
 import { FunctionFailure } from "../sync/function_result.js";
 

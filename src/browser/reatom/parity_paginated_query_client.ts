@@ -4,7 +4,7 @@
  * package doesn't export it.
  */
 import { noop, type Frame } from "@reatom/core";
-import { Value } from "../../values/index.js";
+import { Value } from "convex/values";
 import { Long } from "../../vendor/long.js";
 import { internals, ReatomConvexClient } from "./client.js";
 import { ReatomPaginatedQuery } from "./paginated.js";
