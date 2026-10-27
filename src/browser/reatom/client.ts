@@ -380,6 +380,10 @@ const INITIAL_VERSION: StateVersion = {
 type QueryEntry = ReatomQuery & {
   /** The runtime of the context the entry belongs to. */
   readonly rt: ClientRuntime;
+  /** Whether some Reatom subscriber reads `result`. */
+  connected: boolean;
+  /** Subscriptions through `BaseConvexClient`, which bypass Reatom's. */
+  retained: number;
   readonly result: Atom<FunctionResult | undefined>;
   readonly componentPath: string | undefined;
   /** Assigned while the server knows the query or is about to. */
@@ -816,6 +820,8 @@ export function reatomConvexClient(
     let status: Computed<QueryStatus> | undefined;
     const entry: QueryEntry = {
       rt,
+      connected: false,
+      retained: 0,
       token,
       udfPath,
       args,
@@ -853,8 +859,14 @@ export function reatomConvexClient(
     };
     result.extend(
       withConnectionHooks(
-        () => connectEntry(entry),
-        () => disconnectEntry(entry),
+        () => {
+          entry.connected = true;
+          if (entry.retained === 0) connectEntry(entry);
+        },
+        () => {
+          entry.connected = false;
+          if (entry.retained === 0) disconnectEntry(entry);
+        },
       ),
     );
     rt.entries.set(entry);
@@ -1639,6 +1651,20 @@ export function reatomConvexClient(
       return entry?.id === null ? undefined : entry?.journal;
     },
     queryEntry,
+    retainQuery: (entry) => {
+      const queryEntry = entry as QueryEntry;
+      if (queryEntry.retained++ === 0 && !queryEntry.connected) {
+        connectEntry(queryEntry);
+      }
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        if (--queryEntry.retained === 0 && !queryEntry.connected) {
+          disconnectEntry(queryEntry);
+        }
+      };
+    },
     paginatedQueryEntry,
     enqueueMutation,
     actionInternal,
@@ -1755,6 +1781,8 @@ export type ReatomConvexClientInternals = {
     args: Record<string, Value>,
     options?: ReatomQueryOptions,
   ) => ReatomQuery & { result: Atom<FunctionResult | undefined> };
+  /** Keeps the query subscribed until the returned function runs. */
+  retainQuery: (entry: ReatomQuery) => () => void;
   paginatedQueryEntry: (
     udfPath: string,
     args: Record<string, Value>,

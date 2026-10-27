@@ -236,10 +236,10 @@ export class BaseConvexClient {
     const argsObject = parseArgs(args);
     return this.run(() => {
       const entry = this.internal.queryEntry(name, argsObject, options);
-      const unsubscribe = entry.result.subscribe(noop);
+      const release = this.internal.retainQuery(entry);
       return {
         queryToken: entry.token,
-        unsubscribe: () => this.run(unsubscribe),
+        unsubscribe: () => this.run(release),
       };
     });
   }
