@@ -204,10 +204,10 @@ export function reatomPaginatedQuery(
     `${name}.pages`,
   ).extend(
     withComputed((current) => {
-      const list = current ?? firstPage();
-      // Every page in the list is read, so each stays subscribed.
-      for (const { query } of list.pages.values()) query.result();
-      return startSplits(completeSplits(list));
+      const next = startSplits(completeSplits(current ?? firstPage()));
+      // Exactly the pages in the list are read, so a replaced page drops.
+      for (const { query } of next.pages.values()) query.result();
+      return next;
     }),
     // Like `PaginatedQueryClient`, forget loaded pages once unused.
     withConnectionHooks(noop, () => {

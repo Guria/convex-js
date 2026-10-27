@@ -73,6 +73,16 @@ export type Answer =
     }
   | "removed";
 
+/** JSON with sorted keys, as `convexToJson` sorts them. */
+const stable = (value: unknown): string =>
+  JSON.stringify(value, (_key, inner) =>
+    inner && typeof inner === "object" && !Array.isArray(inner)
+      ? Object.fromEntries(
+          Object.entries(inner).sort(([a], [b]) => (a < b ? -1 : 1)),
+        )
+      : inner,
+  );
+
 const canonical = (udfPath: string) => {
   const name = udfPath.includes(":") ? udfPath : `${udfPath}:default`;
   return name.replace(/\.js:/, ":");
@@ -233,9 +243,9 @@ export class FakeServer {
 
   private queryId(udfPath: string, args: unknown) {
     const path = canonical(udfPath);
-    const json = JSON.stringify(args);
+    const json = stable(args);
     for (const [queryId, query] of this.model.querySet) {
-      if (query.udfPath === path && JSON.stringify(query.args) === json) {
+      if (query.udfPath === path && stable(query.args) === json) {
         return queryId;
       }
     }
@@ -286,6 +296,33 @@ export class FakeServer {
         ? {}
         : { clientClockSkew: options.clientClockSkew }),
     });
+  }
+
+  /** Like `transition`, but sent as `parts` TransitionChunks. */
+  chunkedTransition(
+    answers: Array<[udfPath: string, args: unknown, answer: Answer]>,
+    parts: number,
+  ) {
+    const socket = this.socket;
+    const sent: string[] = [];
+    const deliver = socket.onmessage;
+    socket.onmessage = (event) => sent.push(event.data);
+    try {
+      this.transition(answers);
+    } finally {
+      socket.onmessage = deliver;
+    }
+    const json = sent[0];
+    const size = Math.ceil(json.length / parts);
+    for (let partNumber = 0; partNumber < parts; partNumber++) {
+      this.push({
+        type: "TransitionChunk",
+        chunk: json.slice(partNumber * size, (partNumber + 1) * size),
+        partNumber,
+        totalParts: parts,
+        transitionId: "t1",
+      });
+    }
   }
 
   /** Answers a mutation or action; a mutation commits at the next timestamp. */
@@ -401,12 +438,22 @@ async function run(impl: Impl, scenario: Scenario) {
     await settle();
   } catch (error) {
     trace.push({ scenarioError: String(error) });
+    if (process.env.PARITY_VERBOSE)
+      trace.push({ stack: (error as Error).stack });
   } finally {
     random.mockRestore();
     vi.clearAllTimers();
     vi.useRealTimers();
   }
   return trace;
+}
+
+/** Runs `scenario` on both clients, for scenarios where they differ on purpose. */
+export async function runBoth(scenario: Scenario) {
+  return {
+    upstream: await run(implementations[0], scenario),
+    reatom: await run(implementations[1], scenario),
+  };
 }
 
 /** Runs `scenario` on both clients and expects the same trace. */

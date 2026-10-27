@@ -627,6 +627,8 @@ export function reatomConvexClient(
   const ingest = (
     changed: QueryEntry[],
     completed: Map<RequestId, FunctionResult>,
+    // Queries the server removed: shown, but not reported, as in convex@1.48.0.
+    removed: ReadonlySet<QueryEntry> = new Set(),
   ) => {
     const rt = peek(runtime);
     let updates = optimisticUpdates();
@@ -637,7 +639,7 @@ export function reatomConvexClient(
     }
     const queries: Transition["queries"] = [];
     const show = (entry: QueryEntry, raw: FunctionResult | undefined) => {
-      if (setVisible(entry, raw)) {
+      if (setVisible(entry, raw) && !removed.has(entry)) {
         queries.push({
           token: entry.token,
           modification: { kind: "Updated", result: raw },
@@ -1208,6 +1210,7 @@ export function reatomConvexClient(
       );
     }
     const changed: QueryEntry[] = [];
+    const removed = new Set<QueryEntry>();
     for (const modification of message.modifications) {
       rt.outstandingQueriesOlderThanRestart.delete(modification.queryId);
       // Results for queries already unsubscribed are dropped.
@@ -1247,6 +1250,7 @@ export function reatomConvexClient(
         }
         case "QueryRemoved": {
           entry.server = undefined;
+          removed.add(entry);
           break;
         }
         default: {
@@ -1257,7 +1261,7 @@ export function reatomConvexClient(
       changed.push(entry);
     }
     remoteVersion.set(message.endVersion);
-    ingest(changed, removeCompleted(message.endVersion.ts));
+    ingest(changed, removeCompleted(message.endVersion.ts), removed);
   };
 
   const onMessage = (serverMessage: ServerMessage) => {
