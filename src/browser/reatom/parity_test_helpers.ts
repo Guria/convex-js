@@ -22,6 +22,7 @@ export type Impl = {
   BaseConvexClient: typeof browser.BaseConvexClient;
   ConvexClient: typeof browser.ConvexClient;
   ConvexReactClient: typeof react.ConvexReactClient;
+  react: typeof react;
 };
 
 export const implementations: Impl[] = [
@@ -30,12 +31,14 @@ export const implementations: Impl[] = [
     BaseConvexClient: upstreamBrowser.BaseConvexClient as any,
     ConvexClient: upstreamBrowser.ConvexClient as any,
     ConvexReactClient: upstreamReact.ConvexReactClient as any,
+    react: upstreamReact as any,
   },
   {
     name: "reatom",
     BaseConvexClient: browser.BaseConvexClient,
     ConvexClient: browser.ConvexClient,
     ConvexReactClient: react.ConvexReactClient,
+    react,
   },
 ];
 
@@ -255,7 +258,11 @@ export class FakeServer {
   /** A transition answering the given queries, advancing the timestamp. */
   transition(
     answers: Array<[udfPath: string, args: unknown, answer: Answer]>,
-    options: { clientClockSkew?: number; tsStep?: number } = {},
+    options: {
+      clientClockSkew?: number;
+      serverTs?: number;
+      tsStep?: number;
+    } = {},
   ) {
     this.ts += options.tsStep ?? 1;
     const end = {
@@ -295,6 +302,7 @@ export class FakeServer {
       ...(options.clientClockSkew === undefined
         ? {}
         : { clientClockSkew: options.clientClockSkew }),
+      ...(options.serverTs === undefined ? {} : { serverTs: options.serverTs }),
     });
   }
 
