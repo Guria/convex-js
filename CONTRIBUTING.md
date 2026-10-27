@@ -22,17 +22,22 @@ mise exec dprint@0.51.1 -- dprint check
 
 ## Layout
 
-| Path                              | Holds                                                                                     |
-| --------------------------------- | ----------------------------------------------------------------------------------------- |
-| `src/browser/reatom/index.ts`     | The package's exports                                                                     |
-| `src/browser/reatom/socket.ts`    | WebSocket state machine, backoff, pauses for auth, inactivity, chunked transitions        |
-| `src/browser/reatom/auth.ts`      | Token fetch, server confirmation, scheduled refetch, reauthentication                     |
-| `src/browser/reatom/client.ts`    | Query entries, query set and identity versions, requests, optimistic updates, transitions |
-| `src/browser/reatom/paginated.ts` | Page lists derived from page query results, splits                                        |
-| `src/browser/reatom/parity_*.ts`  | The parity tests' server and their `BaseConvexClient` and `PaginatedQueryClient` adapters |
-| `src/browser/sync`, `src/common`  | Upstream's protocol types and helpers the client reuses, and upstream's client            |
-| `src/values`, `src/server`        | Upstream's values and function references, for upstream's client and the tests            |
-| `scripts/build.mjs`               | The package build                                                                         |
+| Path                                           | Holds                                                                                     |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `src/browser/reatom/index.ts`                  | The package's exports                                                                     |
+| `src/browser/reatom/socket.ts`                 | WebSocket state machine, backoff, pauses for auth, inactivity, chunked transitions        |
+| `src/browser/reatom/auth.ts`                   | Token fetch, server confirmation, scheduled refetch, reauthentication                     |
+| `src/browser/reatom/client.ts`                 | Query entries, query set and identity versions, requests, optimistic updates, transitions |
+| `src/browser/reatom/paginated.ts`              | Page lists derived from page query results, splits                                        |
+| `src/browser/reatom/parity_*.ts`               | The parity tests' server and their `BaseConvexClient` and `PaginatedQueryClient` adapters |
+| `src/browser/sync`, `src/common`, `src/vendor` | Upstream's protocol types and helpers the client reuses, and upstream's client            |
+| `src/values`, `src/server`                     | Upstream's values and function references, which the package takes from `convex`          |
+| `scripts/build.mjs`                            | The package build                                                                         |
+
+The package doesn't ship `src/values` or `src/server`: the build points their
+imports at the `convex` peer. They stay because the client and upstream's sync
+code import them by relative path, which tsc and the tests resolve, and
+upstream's client in the parity tests needs most of `src/server`.
 
 Handles nothing subscribes to (the socket, timers, the chunk buffer, indexes by
 token and query id) live in a per-context runtime object. Query entries are held
