@@ -30,6 +30,8 @@ jobs:
 
       # scripts/build.py runs through uv.
       - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: false
 
       - name: Check whether the version is published
         id: version
@@ -50,10 +52,11 @@ jobs:
         run: npm install -g npm@latest
 
       # Upstream's dev dependencies conflict: @vitest/eslint-plugin wants
-      # TypeScript 6 and the package pins 5.0.
+      # TypeScript 6 and the package pins 5.0. @reatom/core comes from a
+      # pkg.pr.new URL, which npm 12 installs only when allowed.
       - name: Install
         if: steps.version.outputs.publish == 'true'
-        run: npm i --legacy-peer-deps
+        run: npm i --legacy-peer-deps --allow-remote=root
 
       - name: Test
         if: steps.version.outputs.publish == 'true'

@@ -24,10 +24,10 @@ With `@reatom/core@1001.3.0` loaded, Node never exits on its own, so a script
 that imports `convex/browser` or `convex/react` hangs after its work is done.
 Browsers, servers, Convex functions and the `convex` CLI are not affected. The
 fix is on Reatom's `v1001` branch; install that build in projects with such
-scripts:
+scripts (npm 12 installs from a URL only with `--allow-remote`):
 
 ```sh
-npm install @reatom/core@https://pkg.pr.new/@reatom/core@5f42184
+npm install --allow-remote=root @reatom/core@https://pkg.pr.new/@reatom/core@5f42184
 ```
 
 The rest of this README is upstream's.
