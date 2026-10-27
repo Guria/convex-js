@@ -20,13 +20,15 @@ app's Reatom context. It speaks the sync protocol of convex 1.48.0.
 import { reatomConvexClient } from "@reatomized/convex";
 import { atom, computed } from "@reatom/core";
 import { api } from "../convex/_generated/api";
+import type { Id } from "../convex/_generated/dataModel";
 
 const convex = reatomConvexClient(import.meta.env.VITE_CONVEX_URL);
 
-const noteId = atom<Id<"notes">>(initialId);
-const note = computed(() =>
-  convex.query(api.notes.get, { id: noteId() }).data(),
-);
+const noteId = atom<Id<"notes"> | null>(null);
+const note = computed(() => {
+  const id = noteId();
+  return id ? convex.query(api.notes.get, { id }).data() : undefined;
+});
 ```
 
 - `convex.query(ref, args)` returns the entry for that function and arguments,
@@ -84,3 +86,19 @@ Node 22 and later have a global `WebSocket`. On Node 20, pass one, such as the
   `convex/values` and `convex/server` it uses, against 15.8 KiB for
   convex/browser's `BaseConvexClient`. The Reatom functions it uses add 4.6 KiB,
   shared with the rest of the app.
+
+With 1000 components each running its own query in Chromium, mounting takes 9.24
+ms against 65.5 ms for convex/react, unmounting 1.99 ms against 9.87 ms.
+[CONTRIBUTING.md](https://github.com/reatomized/convex/blob/reatom/CONTRIBUTING.md#performance)
+has the full table and how it was measured.
+
+## Development
+
+The repository is a fork of
+[convex/convex-js](https://github.com/convex/convex-js) cut down to this client
+and the upstream sources it reuses.
+[CONTRIBUTING.md](https://github.com/reatomized/convex/blob/reatom/CONTRIBUTING.md)
+covers the layout, the parity tests against upstream's client, syncing with
+upstream, and releases.
+
+Apache-2.0, like convex-js.
