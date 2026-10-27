@@ -70,7 +70,7 @@ import {
   bind,
   Computed,
   computed,
-  context,
+  clientRoot,
   Frame,
 } from "./reatom.js";
 
@@ -409,7 +409,7 @@ export class BaseConvexClient {
     }
     const wsUri = `${wsProtocol}://${origin}/api/${version}/sync`;
 
-    const root = (this.root = context());
+    const root = (this.root = clientRoot());
     const name = "convexClient";
     this.inRoot = (fn) => root.run(fn);
     this._sessionId = newSessionId();

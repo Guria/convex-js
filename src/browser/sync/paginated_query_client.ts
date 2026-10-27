@@ -25,7 +25,7 @@ import {
 } from "./pagination.js";
 import { TS } from "./protocol.js";
 import { Long } from "../../vendor/long.js";
-import { action, atom, Atom, bind, context, Frame } from "./reatom.js";
+import { action, atom, Atom, bind, clientRoot, Frame } from "./reatom.js";
 
 type QueryPageKey = number;
 
@@ -111,7 +111,7 @@ export class PaginatedQueryClient {
     private client: BaseConvexClientInterface,
     private onTransition: (transition: ExtendedTransition) => void,
   ) {
-    this.root = context();
+    this.root = clientRoot();
     // Nonsense initial value to construct synthetic Transitions
     this.lastTransitionTs = atom(
       Long.fromNumber(0),

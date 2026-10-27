@@ -25,7 +25,7 @@ import {
   QueryToken,
   serializedQueryTokenIsPaginated,
 } from "./sync/udf_path_utils.js";
-import { action, atom, Atom, bind, context, Frame } from "./sync/reatom.js";
+import { action, atom, Atom, bind, clientRoot, Frame } from "./sync/reatom.js";
 
 // In Node.js builds this points to a bundled WebSocket implementation. If no
 // WebSocket implementation is manually specified or globally available,
@@ -127,7 +127,7 @@ export class ConvexClient {
       validateDeploymentUrl(address);
     }
     const { disabled, ...baseOptions } = options;
-    const root = (this.root = context());
+    const root = (this.root = clientRoot());
     this._closed = atom(false, "convexClient.closed");
     this._disabled = !!disabled;
     this.closeAction = bind(
