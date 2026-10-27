@@ -157,6 +157,24 @@ test("sends the query set edits of one microtask as one message", async () => {
   });
 });
 
+test("sends queued query set edits before a later message", async () => {
+  await withClient(async ({ client, server, receive }) => {
+    client.subscribe("test:count", {});
+    const mutation = client.mutation("test:add", { text: "x" });
+
+    expect(await receive()).toMatchObject({
+      type: "ModifyQuerySet",
+      modifications: [{ type: "Add", queryId: 0 }],
+    });
+    const request = await receive();
+    expect(request).toMatchObject({ type: "Mutation" });
+
+    server.mutationResponse((request as { requestId: number }).requestId);
+    server.transition([updated(0, 1)], { querySet: 2 });
+    await mutation;
+  });
+});
+
 test("applies a transition or mutation response to the queries it names", async () => {
   await withClient(async ({ client, server, receive }) => {
     const a = client.subscribe("test:echo", { value: "a" });

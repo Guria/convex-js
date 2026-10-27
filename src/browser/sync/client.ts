@@ -30,6 +30,7 @@ import {
 } from "./optimistic_updates_impl.js";
 import {
   ActionRequest,
+  ClientMessage,
   MutationRequest,
   QueryId,
   QueryJournal,
@@ -370,7 +371,7 @@ export class BaseConvexClient {
       {
         authenticate: (token) => {
           const message = this.state.setAuth(token);
-          this.webSocketManager.sendMessage(message);
+          this.sendMessage(message);
           return message.baseVersion;
         },
         stopSocket: () => this.webSocketManager.stop(),
@@ -751,12 +752,12 @@ export class BaseConvexClient {
   /** @internal */
   setAdminAuth(value: string, fakeUserIdentity?: UserIdentityAttributes) {
     const message = this.state.setAdminAuth(value, fakeUserIdentity);
-    this.webSocketManager.sendMessage(message);
+    this.sendMessage(message);
   }
 
   clearAuth() {
     const message = this.state.clearAuth();
-    this.webSocketManager.sendMessage(message);
+    this.sendMessage(message);
   }
 
   /**
@@ -831,6 +832,12 @@ export class BaseConvexClient {
       this.pendingQuerySetModification = null;
       this.webSocketManager.sendMessage(pending);
     }
+  }
+
+  /** Sends `message` after the query set edits queued before it. */
+  private sendMessage(message: ClientMessage): boolean {
+    this.flushQuerySetModification();
+    return this.webSocketManager.sendMessage(message);
   }
 
   /**
@@ -1078,7 +1085,7 @@ export class BaseConvexClient {
       componentPath,
       args: [convexToJson(mutationArgs)],
     };
-    const mightBeSent = this.webSocketManager.sendMessage(message);
+    const mightBeSent = this.sendMessage(message);
     const mutationPromise = this.requestManager.request(message, mightBeSent);
     return {
       requestId,
@@ -1129,7 +1136,7 @@ export class BaseConvexClient {
       args: [convexToJson(actionArgs)],
     };
 
-    const mightBeSent = this.webSocketManager.sendMessage(message);
+    const mightBeSent = this.sendMessage(message);
     return this.requestManager.request(message, mightBeSent);
   }
 
@@ -1184,7 +1191,7 @@ export class BaseConvexClient {
   private reportMarks() {
     if (this.debug) {
       const report = getMarksReport(this.sessionId);
-      this.webSocketManager.sendMessage({
+      this.sendMessage({
         type: "Event",
         eventType: "ClientConnect",
         event: report,
