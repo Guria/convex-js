@@ -12,7 +12,7 @@ const packageJsonPath = join(__dirname, "../package.json");
 const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
 const packageVersion = packageJson.version;
 
-// reatom-convex releases X.Y.(100 * upstream patch + fork release) of upstream
+// @reatomized/convex releases X.Y.(100 * upstream patch + fork release) of upstream
 // X.Y.patch, so they satisfy the `convex` ranges other packages declare.
 // src/index.ts holds the upstream version the server and CLI see.
 const [major, minor, patch] = packageVersion.split(".").map(Number);

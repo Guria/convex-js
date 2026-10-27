@@ -129,7 +129,7 @@ PARITY_TRACE=/tmp/trace.json npx vitest run -t "<scenario>"  # both traces
 
 `main` mirrors [convex/convex-js](https://github.com/convex/convex-js) and holds
 nothing else, so branches for upstream PRs start from it. `reatom` is upstream
-plus this client, and npm gets it as `reatom-convex`.
+plus this client, and npm gets it as `@reatomized/convex`.
 
 To move to a new upstream release, fast-forward `main`, merge it into `reatom`,
 and set the `package.json` version:
@@ -148,4 +148,4 @@ bumps n: 1.48.0 to 1.48.1.
 
 `.github/workflows/release.yml` runs on every push to `reatom`. When npm doesn't
 have the `package.json` version, it tests, packs and publishes through npm
-trusted publishing, then tags the commit `reatom-convex@<version>`.
+trusted publishing, then tags the commit `v<version>`.

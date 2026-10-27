@@ -1,7 +1,7 @@
 name: Release
 
-# Publishes reatom-convex when package.json on `reatom` holds a version npm
-# doesn't have yet, then tags the commit `reatom-convex@<version>`.
+# Publishes @reatomized/convex when package.json on `reatom` holds a version
+# npm doesn't have yet, then tags the commit `v<version>`.
 on:
   push:
     branches: [reatom]
@@ -38,8 +38,8 @@ jobs:
         run: |
           version=$(node -p 'require("./package.json").version')
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          if npm view "reatom-convex@$version" version 2>/dev/null | grep -q .; then
-            echo "reatom-convex@$version is on npm already."
+          if npm view "@reatomized/convex@$version" version 2>/dev/null | grep -q .; then
+            echo "@reatomized/convex@$version is on npm already."
             echo "publish=false" >> "$GITHUB_OUTPUT"
           else
             echo "publish=true" >> "$GITHUB_OUTPUT"
@@ -72,13 +72,14 @@ jobs:
 
       - name: Publish
         if: steps.version.outputs.publish == 'true'
-        run:
-          npm publish "reatom-convex-${{ steps.version.outputs.version }}.tgz"
-          --access public
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: npm publish "reatomized-convex-$VERSION.tgz" --access public
 
       - name: Tag
         if: steps.version.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          tag="reatom-convex@${{ steps.version.outputs.version }}"
-          git tag "$tag"
-          git push origin "$tag"
+          git tag "v$VERSION"
+          git push origin "v$VERSION"

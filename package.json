@@ -1,18 +1,18 @@
 {
-  "name": "reatom-convex",
+  "name": "@reatomized/convex",
   "description": "The convex package with its sync client state in Reatom atoms",
   "version": "1.48.0",
   "author": "Convex, Inc. <no-reply@convex.dev>",
   "contributors": [
     "Aleksei Gurianov <gurianov@gmail.com>"
   ],
-  "homepage": "https://github.com/Guria/reatom-convex/blob/reatom/REATOM.md",
+  "homepage": "https://github.com/reatomized/convex/blob/reatom/REATOM.md",
   "bugs": {
-    "url": "https://github.com/Guria/reatom-convex/issues"
+    "url": "https://github.com/reatomized/convex/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Guria/reatom-convex.git"
+    "url": "git+https://github.com/reatomized/convex.git"
   },
   "main": "./dist/cjs/index.js",
   "module": "./dist/esm/index.js",
