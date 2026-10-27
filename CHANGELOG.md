@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.49.0 (unreleased)
+
+- New `npx convex plugins install` command, which installs the Convex plugin for
+  Claude Code and Codex on macOS and Linux. It works with the terminal CLIs, the
+  desktop apps and the VS Code extensions. Running it again upgrades the plugin
+  to the latest version.
+
 ## 1.48.0
 
 - Convex deployments can now sign their own JWTs with an internally managed
