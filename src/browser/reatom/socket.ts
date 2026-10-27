@@ -626,8 +626,14 @@ export function reatomSocket(
     },
     pause() {
       const current = state();
-      // Disconnected or stopped sockets have nothing to pause.
-      if (current.state === "connecting" || current.state === "ready") {
+      // Disconnected or stopped sockets have nothing to pause. A ready socket
+      // that hasn't sent its handshake still needs `onOpen` on resume.
+      if (current.state === "connecting") {
+        state.set({ ...current, paused: "yes" });
+      } else if (
+        current.state === "ready" &&
+        current.paused !== "uninitialized"
+      ) {
         state.set({ ...current, paused: "yes" });
       }
     },

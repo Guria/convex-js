@@ -78,6 +78,12 @@ Node 22 and later have a global `WebSocket`. On Node 20, pass one, such as the
   transition, which makes mounting N queries cost O(N²).
 - `clearAuth` stops the auth flow. In convex/browser a refetch scheduled before
   `clearAuth` still runs and can authenticate the old session again.
+- When a token fetch returns `null` for a signed-in client, the client sends the
+  server `Authenticate` without a token. convex/browser drops that message while
+  the socket is paused for the fetch, so the server keeps the old identity.
+- With `expectAuth`, a socket that opened before the first token sends `Connect`
+  once the token arrives. convex/browser never sends it, and `hasEverConnected`
+  stays false.
 - A failed page of a paginated query lands in its `error` atom. In
   convex/browser it throws out of the WebSocket message handler.
 - Server results stay visible across a reconnect until the new connection

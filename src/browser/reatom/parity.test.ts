@@ -436,29 +436,6 @@ describe("auth", () => {
     });
   });
 
-  test("expectAuth holds requests until the first token", async () => {
-    await expectParity(async ({ impl, server, log, checkpoint, settle }) => {
-      const client = new impl.BaseConvexClient(URL, () => {}, {
-        ...clientOptions(server),
-        expectAuth: true,
-      });
-      server.open();
-      client.subscribe("notes:list", {});
-      const mutation = caught(client.mutation("notes:add", {}));
-      await checkpoint("held");
-      log({ state: client.connectionState() });
-      client.setAuth(fetcher(log, [jwt("cached", 1, 3601)]), (value) =>
-        log({ onChange: value }),
-      );
-      await checkpoint("sent");
-      server.respond(0, { value: "ok" });
-      server.transition([["notes:list", {}, { value: [] }]]);
-      log(await mutation);
-      await settle();
-      await client.close();
-    });
-  });
-
   test("setAuth during a token fetch wins", async () => {
     await expectParity(async ({ impl, server, log, checkpoint, settle }) => {
       const client = new impl.BaseConvexClient(
@@ -877,6 +854,70 @@ describe("deviations", () => {
       impersonating: undefined,
     });
     expect(afterClear(reatom)).toEqual(["cleared", { hasAuth: false }]);
+  });
+
+  test("a socket that opened before the first token sends Connect on resume", async () => {
+    const { upstream, reatom } = await runBoth(
+      async ({ impl, server, log, checkpoint, settle }) => {
+        const client = new impl.BaseConvexClient(URL, () => {}, {
+          ...clientOptions(server),
+          expectAuth: true,
+        });
+        server.open();
+        client.subscribe("notes:list", {});
+        const mutation = caught(client.mutation("notes:add", {}));
+        await checkpoint("held");
+        client.setAuth(fetcher(log, [jwt("cached", 1, 3601)]), (value) =>
+          log({ onChange: value }),
+        );
+        await checkpoint("sent");
+        server.respond(0, { value: "ok" });
+        server.transition([["notes:list", {}, { value: [] }]]);
+        log(await mutation);
+        await settle();
+        log({ hasEverConnected: client.connectionState().hasEverConnected });
+        await client.close();
+      },
+    );
+    const received = (trace: unknown[]) =>
+      trace.flatMap((entry: any) => (entry?.received ? [entry.received] : []));
+    expect(received(upstream)).not.toContain("Connect");
+    expect(received(reatom)).toEqual(["Connect", ...received(upstream)]);
+    expect(upstream.at(-1)).toEqual({ hasEverConnected: false });
+    expect(reatom.at(-1)).toEqual({ hasEverConnected: true });
+  });
+
+  test("a token fetch returning null signs the server out too", async () => {
+    const { upstream, reatom } = await runBoth(
+      async ({ impl, server, log, checkpoint, settle }) => {
+        const client = new impl.BaseConvexClient(
+          URL,
+          () => {},
+          clientOptions(server),
+        );
+        server.open();
+        client.setAuth(
+          fetcher(log, [jwt("cached", 1, 3601), jwt("fresh", 1, 3601)]),
+          (value) => log({ onChange: value }),
+        );
+        await settle();
+        server.transition([]);
+        await settle();
+        server.transition([]);
+        await checkpoint("signed in");
+        log("signing out");
+        client.setAuth(fetcher(log, [null, null]), (value) =>
+          log({ onChange: value }),
+        );
+        await checkpoint("signed out");
+        await client.close();
+      },
+    );
+    const afterSignOut = (trace: unknown[]) =>
+      trace.slice(trace.indexOf("signing out"));
+    const signOut = { received: "Authenticate", tokenType: "None" };
+    expect(afterSignOut(upstream)).not.toContainEqual(signOut);
+    expect(afterSignOut(reatom)).toContainEqual(signOut);
   });
 
   test("results stay visible across a reconnect until the server answers", async () => {

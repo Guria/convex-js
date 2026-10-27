@@ -448,6 +448,8 @@ type ClientRuntime = {
   /** Queries re-sent on reconnect the server has not answered yet. */
   outstandingQueriesOlderThanRestart: Set<QueryId>;
   outstandingAuthOlderThanRestart: boolean;
+  /** Auth was cleared while paused; resume tells the server. */
+  clearAuthOnResume: boolean;
   requestsOlderThanRestart: Set<RequestId>;
   overlay: Overlay;
   nextRequestId: RequestId;
@@ -576,6 +578,7 @@ export function reatomConvexClient(
       paused: false,
       outstandingQueriesOlderThanRestart: new Set(),
       outstandingAuthOlderThanRestart: false,
+      clearAuthOnResume: false,
       requestsOlderThanRestart: new Set(),
       overlay: new Map(),
       nextRequestId: 0,
@@ -927,7 +930,11 @@ export function reatomConvexClient(
       socket.send(setAuthToken({ tokenType: "User", value }));
     },
     dropAuth: () => void clearAuthToken(),
-    clearAuth: () => void socket.send(clearAuthToken()),
+    clearAuth: () => {
+      // A paused socket drops the message.
+      if (peek(runtime).paused) peek(runtime).clearAuthOnResume = true;
+      socket.send(clearAuthToken());
+    },
     stopSocket: () => socket.stop(),
     tryRestartSocket: () => socket.tryRestart(),
     pauseSocket: () => {
@@ -1153,6 +1160,7 @@ export function reatomConvexClient(
     // re-add every query, resend mutations and reauthenticate.
     remoteVersion.set(INITIAL_VERSION);
     rt.paused = false;
+    rt.clearAuthOnResume = false;
     for (const entry of rt.pending.values()) {
       if (entry.op === "Remove") forget(entry);
       else entry.op = null;
@@ -1206,7 +1214,12 @@ export function reatomConvexClient(
         baseVersion,
         ...token,
       } as Authenticate;
+    } else if (rt.clearAuthOnResume) {
+      const baseVersion = identityVersion();
+      identityVersion.set(baseVersion + 1);
+      authenticate = { type: "Authenticate", tokenType: "None", baseVersion };
     }
+    rt.clearAuthOnResume = false;
     rt.paused = false;
     if (authenticate) socket.send(authenticate);
     if (querySet) socket.send(querySet);
