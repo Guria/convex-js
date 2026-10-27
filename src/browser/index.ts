@@ -44,4 +44,17 @@ export type { UserIdentityAttributes } from "./sync/protocol.js";
 export type { FunctionResult } from "./sync/function_result.js";
 /** @internal */
 export { convexQueryOptions } from "./query_options.js";
+export { reatomConvexClient } from "./reatom/client.js";
+export type {
+  QueryModification,
+  QueryStatus,
+  ReatomConvexClient,
+  ReatomQuery,
+  ReatomQueryOptions,
+  Transition,
+} from "./reatom/client.js";
+export type {
+  PaginatedQueryState,
+  ReatomPaginatedQuery,
+} from "./reatom/paginated.js";
 export type { QueryOptions } from "./query_options.js";
