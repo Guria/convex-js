@@ -15,7 +15,7 @@
 import { noop, type Frame } from "@reatom/core";
 import { Value } from "../../values/index.js";
 import { Long } from "../../vendor/long.js";
-import { ReatomConvexClient } from "../reatom/client.js";
+import { internals, ReatomConvexClient } from "../reatom/client.js";
 import { ReatomPaginatedQuery } from "../reatom/paginated.js";
 import { BaseConvexClientInterface, Transition } from "./client.js";
 import { PaginatedQueryResult } from "./pagination.js";
@@ -106,7 +106,10 @@ export class PaginatedQueryClient {
     // Only the expected options are part of the token.
     const { initialNumItems, id } = options;
     const query = this.run(() =>
-      reatom.paginatedQueryEntry(name, args, { initialNumItems, id }),
+      internals(reatom).paginatedQueryEntry(name, args, {
+        initialNumItems,
+        id,
+      }),
     );
     const token = query.token;
     const existing = this.subscriptions.get(token);

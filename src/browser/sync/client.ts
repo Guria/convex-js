@@ -16,9 +16,11 @@ import { parseArgs } from "../../common/index.js";
 import {
   BaseConvexClientOptions,
   ConnectionState,
+  internals,
   MutationOptions,
   reatomConvexClient,
   ReatomConvexClient,
+  ReatomConvexClientInternals,
   SubscribeOptions,
   Transition,
 } from "../reatom/client.js";
@@ -70,6 +72,7 @@ function currentRootFrame(): Frame {
  */
 export class BaseConvexClient {
   private readonly client: ReatomConvexClient;
+  private readonly internal: ReatomConvexClientInternals;
   private readonly frame: Frame;
   private readonly connectionStateSubscribers = new Map<
     number,
@@ -96,11 +99,12 @@ export class BaseConvexClient {
       (options as { [REATOM_CLIENT]?: ReatomConvexClient } | undefined)?.[
         REATOM_CLIENT
       ] ?? reatomConvexClient(address, options, "convexClient");
+    this.internal = internals(this.client);
     this.frame.run(() => {
-      this.client.addOnTransitionHandler((transition) => {
+      this.internal.addOnTransitionHandler((transition) => {
         onTransition(transition.queries.map((q) => q.token));
       });
-      this.client.start();
+      this.internal.start();
       // Published from the start, so a later subscriber waits for a change.
       this.client.connectionState.subscribe((connectionState) =>
         this.publishConnectionState(connectionState),
@@ -155,7 +159,7 @@ export class BaseConvexClient {
   }
 
   getMaxObservedTimestamp(): TS | undefined {
-    return this.run(() => this.client.maxObservedTimestamp());
+    return this.run(() => this.internal.maxObservedTimestamp());
   }
 
   /**
@@ -168,7 +172,7 @@ export class BaseConvexClient {
    * @returns
    */
   addOnTransitionHandler(fn: (transition: Transition) => void) {
-    return this.run(() => this.client.addOnTransitionHandler(fn));
+    return this.run(() => this.internal.addOnTransitionHandler(fn));
   }
 
   /**
@@ -198,12 +202,12 @@ export class BaseConvexClient {
   }
 
   hasAuth() {
-    return this.run(() => this.client.hasAuth());
+    return this.run(() => this.internal.hasAuth());
   }
 
   /** @internal */
   setAdminAuth(value: string, fakeUserIdentity?: UserIdentityAttributes) {
-    this.run(() => this.client.setAdminAuth(value, fakeUserIdentity));
+    this.run(() => this.internal.setAdminAuth(value, fakeUserIdentity));
   }
 
   clearAuth() {
@@ -231,7 +235,7 @@ export class BaseConvexClient {
   ): { queryToken: QueryToken; unsubscribe: () => void } {
     const argsObject = parseArgs(args);
     return this.run(() => {
-      const entry = this.client.queryEntry(name, argsObject, options);
+      const entry = this.internal.queryEntry(name, argsObject, options);
       const unsubscribe = entry.result.subscribe(noop);
       return {
         queryToken: entry.token,
@@ -264,7 +268,7 @@ export class BaseConvexClient {
    * @internal
    */
   localQueryResultByToken(queryToken: QueryToken): Value | undefined {
-    return this.run(() => this.client.localQueryResultByToken(queryToken));
+    return this.run(() => this.internal.localQueryResultByToken(queryToken));
   }
 
   /**
@@ -275,7 +279,7 @@ export class BaseConvexClient {
    * @internal
    */
   hasLocalQueryResultByToken(queryToken: QueryToken): boolean {
-    return this.run(() => this.client.hasLocalQueryResultByToken(queryToken));
+    return this.run(() => this.internal.hasLocalQueryResultByToken(queryToken));
   }
 
   /**
@@ -287,7 +291,7 @@ export class BaseConvexClient {
   ): string[] | undefined {
     const queryToken = serializePathAndArgs(udfPath, parseArgs(args));
     return this.run(
-      () => this.client.rawQueryResultByToken(queryToken)?.logLines,
+      () => this.internal.rawQueryResultByToken(queryToken)?.logLines,
     );
   }
 
@@ -305,7 +309,7 @@ export class BaseConvexClient {
     args?: Record<string, Value>,
   ): QueryJournal | undefined {
     const queryToken = serializePathAndArgs(name, parseArgs(args));
-    return this.run(() => this.client.queryJournal(queryToken));
+    return this.run(() => this.internal.queryJournal(queryToken));
   }
 
   /**
@@ -386,7 +390,7 @@ export class BaseConvexClient {
     componentPath?: string,
   ): { requestId: RequestId; mutationPromise: Promise<FunctionResult> } {
     return this.run(() =>
-      this.client.enqueueMutation(udfPath, args, options, componentPath),
+      this.internal.enqueueMutation(udfPath, args, options, componentPath),
     );
   }
 
@@ -413,7 +417,7 @@ export class BaseConvexClient {
     componentPath?: string,
   ): Promise<FunctionResult> {
     return this.run(() =>
-      this.client.actionInternal(udfPath, args, componentPath),
+      this.internal.actionInternal(udfPath, args, componentPath),
     );
   }
 
@@ -443,14 +447,14 @@ export class BaseConvexClient {
    * @internal
    */
   get nextRequestId() {
-    return this.run(() => this.client.nextRequestId());
+    return this.run(() => this.internal.nextRequestId());
   }
 
   /**
    * @internal
    */
   get sessionId() {
-    return this.run(() => this.client.sessionId());
+    return this.run(() => this.internal.sessionId());
   }
 }
 

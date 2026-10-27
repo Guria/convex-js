@@ -18,6 +18,7 @@ import {
   noop,
   peek,
   wrap,
+  type Action,
   type Atom,
   type AtomLike,
   type Computed,
@@ -490,7 +491,7 @@ export function reatomConvexClient(
   address: string,
   options: BaseConvexClientOptions = {},
   name = "convex",
-) {
+): ReatomConvexClient {
   if (typeof address === "object") {
     throw new Error(
       "Passing a ClientConfig object is no longer supported. Pass the URL of the Convex deployment as a string directly.",
@@ -1584,158 +1585,212 @@ export function reatomConvexClient(
     throw functionError("query", udfPath, result);
   };
 
-  return {
+  const client: ReatomConvexClient = {
     name,
-    /** The deployment address. */
     url: address,
-    /** The connection with the backend; subscribing connects. */
     connectionState,
-    /** Server confirmation of the current token, see {@link reatomConvexClient}. */
-    isAuthenticated: isAuthenticated as AtomLike<boolean | null, []>,
-    isRefreshingAuth: isRefreshingAuth as AtomLike<boolean, []>,
-    /** The current user JWT and its decoded claims. */
+    isAuthenticated,
+    isRefreshingAuth,
     authClaims,
-    /** The socket state machine and its counters. */
-    socket: {
-      state: socket.state as AtomLike<SocketState, []>,
-      connectionCount: socket.connectionCount as AtomLike<number, []>,
-      retries: socket.retries as AtomLike<number, []>,
-      hasEverConnected: socket.hasEverConnected as AtomLike<boolean, []>,
-    },
-    /** The auth flow's state machine. */
-    authState: auth.state,
-    querySetVersion: querySetVersion as AtomLike<number, []>,
-    identityVersion: identityVersion as AtomLike<number, []>,
-    remoteVersion: remoteVersion as AtomLike<StateVersion, []>,
-    maxObservedTimestamp: maxObservedTimestamp as AtomLike<TS | undefined, []>,
-    requests: requests as AtomLike<ReadonlyMap<RequestId, Request>, []>,
-    optimisticUpdates: optimisticUpdates as AtomLike<
-      readonly OptimisticUpdateAndId[],
-      []
-    >,
-
-    /**
-     * A query of this client. Equal queries return the same entry.
-     *
-     * @param query - A query reference, or a function path.
-     * @param args - The query arguments, `{}` by default.
-     */
-    query<Query extends QueryRef>(
-      query: Query,
-      args?: ArgsOf<Query>,
-      queryOptions?: ReatomQueryOptions,
-    ): ReatomQuery<ReturnOf<Query>> {
-      return queryEntry(
+    socketState: socket.state,
+    query: (query, args, queryOptions) =>
+      queryEntry(
         functionName(query),
         parseArgs(args as Record<string, Value> | undefined),
         queryOptions,
-      ) as ReatomQuery<ReturnOf<Query>>;
-    },
-
-    /**
-     * A paginated query of this client. Equal queries with the same `id`
-     * share their pages, `id` is `-1` by default.
-     *
-     * @param query - A paginated query reference, or a function path.
-     * @param args - The query arguments without `paginationOpts`.
-     */
-    paginatedQuery<Query extends QueryRef>(
-      query: Query,
-      args: Omit<ArgsOf<Query>, "paginationOpts">,
-      paginatedOptions: { initialNumItems: number; id?: number },
-    ): ReatomPaginatedQuery<PaginatedItemOf<Query>> {
-      return paginatedQueryEntry(
+      ) as ReatomQuery<any>,
+    paginatedQuery: (query, args, paginatedOptions) =>
+      paginatedQueryEntry(
         functionName(query),
         parseArgs(args as Record<string, Value>),
         {
           initialNumItems: paginatedOptions.initialNumItems,
           id: paginatedOptions.id ?? -1,
         },
-      ) as ReatomPaginatedQuery<PaginatedItemOf<Query>>;
-    },
-
-    /** Run a mutation; `optimisticUpdate` edits local results until it is reflected. */
-    mutation<Mutation extends MutationRef>(
-      mutation: Mutation,
-      args?: ArgsOf<Mutation>,
-      mutationOptions?: MutationOptions,
-    ): Promise<ReturnOf<Mutation>> {
-      return runMutation(
+      ) as ReatomPaginatedQuery<any>,
+    mutation: (mutation, args, mutationOptions) =>
+      runMutation(
         functionName(mutation),
         args as Record<string, Value> | undefined,
         mutationOptions,
-      );
-    },
-
-    action<Action extends ActionRef>(
-      action: Action,
-      args?: ArgsOf<Action>,
-    ): Promise<ReturnOf<Action>> {
-      return runAction(
+      ),
+    action: (action, args) =>
+      runAction(
         functionName(action),
         args as Record<string, Value> | undefined,
-      );
-    },
-
-    /**
-     * Fetch a token, send it, and refetch it before it expires or when the
-     * server rejects it. `fetchToken` should return `null` when no token can
-     * be had, for example after the user's rights were revoked.
-     */
+      ),
     setAuth,
-    /** Stop the auth flow and continue without an identity. */
     clearAuth,
-    /** @internal */
-    setAdminAuth,
-    /** Close the connection for good. */
     close,
-
-    /** @internal */
+  };
+  INTERNALS.set(client, {
+    setAdminAuth,
     localQueryResultByToken,
-    /** @internal */
     rawQueryResultByToken,
-    /** @internal */
-    hasLocalQueryResultByToken: (queryToken: QueryToken) =>
+    hasLocalQueryResultByToken: (queryToken) =>
       rawQueryResultByToken(queryToken) !== undefined,
-    /** @internal */
-    queryJournal(queryToken: QueryToken): QueryJournal | undefined {
+    queryJournal: (queryToken) => {
       const entry = lookup(queryToken);
       return entry?.id === null ? undefined : entry?.journal;
     },
-    /** @internal */
     queryEntry,
-    /** @internal */
     paginatedQueryEntry,
-    /** @internal */
     enqueueMutation,
-    /** @internal */
     actionInternal,
-    /**
-     * Calls `handler` synchronously with each change to local query results.
-     *
-     * @internal
-     */
-    addOnTransitionHandler(handler: (transition: Transition) => void) {
+    addOnTransitionHandler: (handler) => {
       const { transitionHandlers } = peek(runtime);
       transitionHandlers.add(handler);
       return () => transitionHandlers.delete(handler);
     },
-    /** @internal */
     start,
-    /** @internal */
     sessionId: () => peek(runtime).sessionId,
-    /** @internal */
     nextRequestId: () => peek(runtime).nextRequestId,
-    /** @internal */
     hasAuth: () => authToken() !== undefined,
-    /** @internal */
-    logger,
-  };
+    maxObservedTimestamp: () => maxObservedTimestamp(),
+    authState: () => auth.state().state,
+    optimisticUpdates: () => optimisticUpdates().length,
+  });
+  return client;
 }
 
 /**
- * A client created with {@link reatomConvexClient}.
+ * A Convex client whose state lives in Reatom atoms, created with
+ * {@link reatomConvexClient}. Use it inside a Reatom frame.
  *
  * @public
  */
-export type ReatomConvexClient = ReturnType<typeof reatomConvexClient>;
+export interface ReatomConvexClient {
+  /** The prefix of the client's atom names. */
+  readonly name: string;
+  /** The deployment address. */
+  readonly url: string;
+  /** The connection with the backend; subscribing connects. */
+  readonly connectionState: Computed<ConnectionState>;
+  /**
+   * Whether the server accepted the current token: `null` while a token waits
+   * for the server, `false` without auth.
+   */
+  readonly isAuthenticated: AtomLike<boolean | null, []>;
+  /** The server rejected a confirmed token and a replacement is being fetched. */
+  readonly isRefreshingAuth: AtomLike<boolean, []>;
+  /** The current user JWT and its decoded claims. */
+  readonly authClaims: Computed<
+    { token: string; decoded: Record<string, any> } | undefined
+  >;
+  /** The socket state machine. */
+  readonly socketState: AtomLike<SocketState, []>;
+  /**
+   * A query of this client. Equal queries return the same entry.
+   *
+   * @param query - A query reference, or a function path.
+   * @param args - The query arguments, `{}` by default.
+   */
+  query<Query extends QueryRef>(
+    query: Query,
+    args?: ArgsOf<Query>,
+    options?: ReatomQueryOptions,
+  ): ReatomQuery<ReturnOf<Query>>;
+  /**
+   * A paginated query of this client. Equal queries with the same `id` share
+   * their pages; `id` is `-1` by default.
+   *
+   * @param query - A paginated query reference, or a function path.
+   * @param args - The query arguments without `paginationOpts`.
+   */
+  paginatedQuery<Query extends QueryRef>(
+    query: Query,
+    args: Omit<ArgsOf<Query>, "paginationOpts">,
+    options: { initialNumItems: number; id?: number },
+  ): ReatomPaginatedQuery<PaginatedItemOf<Query>>;
+  /** Run a mutation; `optimisticUpdate` edits local results until it is reflected. */
+  mutation<Mutation extends MutationRef>(
+    mutation: Mutation,
+    args?: ArgsOf<Mutation>,
+    options?: MutationOptions,
+  ): Promise<ReturnOf<Mutation>>;
+  action<Action extends ActionRef>(
+    action: Action,
+    args?: ArgsOf<Action>,
+  ): Promise<ReturnOf<Action>>;
+  /**
+   * Fetch a token, send it, and refetch it before it expires or when the
+   * server rejects it. `fetchToken` should return `null` when no token can be
+   * had, for example after the user's rights were revoked.
+   */
+  readonly setAuth: Action<
+    [
+      fetchToken: AuthTokenFetcher,
+      onChange?: ((isAuthenticated: boolean) => void) | undefined,
+      onRefreshChange?: ((isRefreshing: boolean) => void) | undefined,
+    ],
+    void
+  >;
+  /** Stop the auth flow and continue without an identity. */
+  readonly clearAuth: Action<[], void>;
+  /** Close the connection for good. */
+  readonly close: Action<[], Promise<void>>;
+}
+
+/**
+ * What `BaseConvexClient` and `PaginatedQueryClient` need beyond the public API.
+ *
+ * @internal
+ */
+export type ReatomConvexClientInternals = {
+  setAdminAuth: (
+    value: string,
+    fakeUserIdentity?: UserIdentityAttributes,
+  ) => void;
+  localQueryResultByToken: (queryToken: QueryToken) => Value | undefined;
+  rawQueryResultByToken: (queryToken: QueryToken) => FunctionResult | undefined;
+  hasLocalQueryResultByToken: (queryToken: QueryToken) => boolean;
+  queryJournal: (queryToken: QueryToken) => QueryJournal | undefined;
+  queryEntry: (
+    udfPath: string,
+    args: Record<string, Value>,
+    options?: ReatomQueryOptions,
+  ) => ReatomQuery & { result: Atom<FunctionResult | undefined> };
+  paginatedQueryEntry: (
+    udfPath: string,
+    args: Record<string, Value>,
+    options: PaginatedOptions,
+  ) => ReatomPaginatedQuery;
+  enqueueMutation: (
+    udfPath: string,
+    args?: Record<string, Value>,
+    options?: MutationOptions,
+    componentPath?: string,
+  ) => { requestId: RequestId; mutationPromise: Promise<FunctionResult> };
+  actionInternal: (
+    udfPath: string,
+    args?: Record<string, Value>,
+    componentPath?: string,
+  ) => Promise<FunctionResult>;
+  /** Calls `handler` synchronously with each change to local query results. */
+  addOnTransitionHandler: (
+    handler: (transition: Transition) => void,
+  ) => () => boolean;
+  /** Opens the socket in this context. */
+  start: () => void;
+  sessionId: () => string;
+  nextRequestId: () => RequestId;
+  hasAuth: () => boolean;
+  maxObservedTimestamp: () => TS | undefined;
+  authState: () => string;
+  /** Optimistic updates still pending. */
+  optimisticUpdates: () => number;
+};
+
+const INTERNALS = new WeakMap<
+  ReatomConvexClient,
+  ReatomConvexClientInternals
+>();
+
+/** @internal */
+export function internals(
+  client: ReatomConvexClient,
+): ReatomConvexClientInternals {
+  const found = INTERNALS.get(client);
+  if (!found) throw new Error("Not a client created by reatomConvexClient");
+  return found;
+}

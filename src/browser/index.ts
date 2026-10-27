@@ -57,4 +57,5 @@ export type {
   PaginatedQueryState,
   ReatomPaginatedQuery,
 } from "./reatom/paginated.js";
+export type { SocketState } from "./reatom/socket.js";
 export type { QueryOptions } from "./query_options.js";

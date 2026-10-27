@@ -4,7 +4,7 @@ import { makeFunctionReference } from "../../server/api.js";
 import { ConvexError } from "../../values/errors.js";
 import { BaseConvexClient } from "../sync/client.js";
 import { ConvexReactClient } from "../../react/client.js";
-import { reatomConvexClient } from "./client.js";
+import { internals, reatomConvexClient } from "./client.js";
 import { clientOptions, FakeServer, settle } from "./parity_test_helpers.js";
 
 const URL = "https://happy-otter-123.convex.cloud";
@@ -138,7 +138,7 @@ describe("reatomConvexClient", () => {
     );
     frame.run(() => {
       expect(notes.data()).toEqual(["a", "b"]);
-      expect(convex.optimisticUpdates()).toHaveLength(1);
+      expect(internals(convex).optimisticUpdates()).toBe(1);
       expect(convex.connectionState().inflightMutations).toBe(1);
     });
     server.respond(0, { value: null });
@@ -146,7 +146,7 @@ describe("reatomConvexClient", () => {
     await expect(result).resolves.toBeNull();
     frame.run(() => {
       expect(notes.data()).toEqual(["a", "B"]);
-      expect(convex.optimisticUpdates()).toHaveLength(0);
+      expect(internals(convex).optimisticUpdates()).toBe(0);
     });
 
     const failed = frame.run(() => convex.action("notes:send", {}));
