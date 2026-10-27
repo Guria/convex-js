@@ -333,11 +333,15 @@ test("replays optimistic updates over every result until the server confirms", a
     expect(client.localQueryResult("test:count", {})).toBe(10);
 
     const request = await receive();
-    server.mutationResponse((request as { requestId: number }).requestId);
     server.transition([updated(0, 1)]);
+    await vi.waitFor(() =>
+      expect(client.localQueryResult("test:count", {})).toBe(11),
+    );
+    server.mutationResponse((request as { requestId: number }).requestId);
+    server.transition([updated(0, 2)]);
     await mutation;
 
-    expect(client.localQueryResult("test:count", {})).toBe(1);
+    expect(client.localQueryResult("test:count", {})).toBe(2);
     expect(client.localQueryResult("test:echo", { value: "a" })).toBe("a");
   });
 });
