@@ -431,7 +431,11 @@ export function reatomAuth(
         notifyRefreshChange(false);
         scheduleTokenRefetch(current.token);
         peek(runtime).tokenConfirmationAttempts = 0;
-        if (!current.hadAuth) {
+        // Read after scheduling, as convex@1.48.0 does: once the refetch is
+        // scheduled the state has no `hadAuth`, so every confirmed fresh
+        // token reports `true`.
+        const after = state();
+        if (!("hadAuth" in after && after.hadAuth)) {
           current.config.onAuthChange(true);
         }
       }

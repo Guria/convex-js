@@ -302,3 +302,234 @@ describe("ConvexClient", () => {
     });
   });
 });
+
+/** An unsigned JWT; the client only decodes `iat` and `exp`. */
+const jwt = (name: string, iat: number, exp: number) =>
+  [
+    Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url"),
+    Buffer.from(JSON.stringify({ sub: name, iat, exp })).toString("base64url"),
+    name,
+  ].join(".");
+
+/** A token fetcher handing out `tokens` in order and logging each call. */
+const fetcher =
+  (log: (...entry: unknown[]) => void, tokens: Array<string | null>) =>
+  async ({ forceRefreshToken }: { forceRefreshToken: boolean }) => {
+    const token = tokens.shift() ?? null;
+    log({ fetchToken: forceRefreshToken, token: token?.split(".")[2] });
+    return token;
+  };
+
+describe("auth", () => {
+  test("cached token, fresh token, scheduled refetch", async () => {
+    await expectParity(async ({ impl, server, log, checkpoint, settle }) => {
+      const client = new impl.BaseConvexClient(
+        URL,
+        () => {},
+        clientOptions(server),
+      );
+      server.open();
+      client.subscribe("notes:list", {});
+      client.setAuth(
+        fetcher(log, [jwt("cached", 1, 3601), jwt("fresh", 1, 61)]),
+        (isAuthenticated) => log({ onChange: isAuthenticated }),
+        (isRefreshing) => log({ onRefreshChange: isRefreshing }),
+      );
+      await checkpoint("paused for token");
+      log({ hasAuth: client.hasAuth() });
+      server.transition([["notes:list", {}, { value: 1 }]]);
+      await settle();
+      log({ claims: client.getCurrentAuthClaims()?.decoded });
+      server.transition([["notes:list", {}, { value: 2 }]]);
+      await settle();
+      log({ claims: client.getCurrentAuthClaims()?.decoded });
+      await vi.advanceTimersByTimeAsync(49_000);
+      log("before refetch");
+      await vi.advanceTimersByTimeAsync(2_000);
+      await checkpoint("refetched");
+      await client.close();
+    });
+  });
+
+  test("no cached token: force refetch, then confirmation", async () => {
+    await expectParity(async ({ impl, server, log, checkpoint, settle }) => {
+      const client = new impl.BaseConvexClient(
+        URL,
+        () => {},
+        clientOptions(server),
+      );
+      server.open();
+      client.setAuth(
+        fetcher(log, [null, jwt("fresh", 1, 601)]),
+        (isAuthenticated) => log({ onChange: isAuthenticated }),
+      );
+      await checkpoint("fetched");
+      server.transition([]);
+      await settle();
+      log({ hasAuth: client.hasAuth() });
+      await client.close();
+    });
+  });
+
+  test("no token at all reports unauthenticated", async () => {
+    await expectParity(async ({ impl, server, log, checkpoint }) => {
+      const client = new impl.BaseConvexClient(
+        URL,
+        () => {},
+        clientOptions(server),
+      );
+      server.open();
+      client.subscribe("notes:list", {});
+      client.setAuth(fetcher(log, [null, null]), (isAuthenticated) =>
+        log({ onChange: isAuthenticated }),
+      );
+      await checkpoint("gave up");
+      log({ hasAuth: client.hasAuth() });
+      await client.close();
+    });
+  });
+
+  test("a rejected token is replaced with the socket stopped", async () => {
+    await expectParity(async ({ impl, server, log, checkpoint, settle }) => {
+      const client = new impl.BaseConvexClient(
+        URL,
+        () => {},
+        clientOptions(server),
+      );
+      server.open();
+      client.subscribe("notes:list", {});
+      client.setAuth(
+        fetcher(log, [
+          jwt("cached", 1, 3601),
+          jwt("fresh", 1, 3601),
+          jwt("replacement", 1, 3601),
+        ]),
+        (isAuthenticated) => log({ onChange: isAuthenticated }),
+        (isRefreshing) => log({ onRefreshChange: isRefreshing }),
+      );
+      await settle();
+      server.transition([["notes:list", {}, { value: 1 }]]);
+      await settle();
+      server.transition([]);
+      await settle();
+      // An expired token while running a function is not a token update.
+      server.authError("expired", { authUpdateAttempted: false });
+      await settle();
+      log({ state: client.connectionState() });
+      await settle();
+      server.open();
+      await checkpoint("reauthenticated");
+      server.transition([["notes:list", {}, { value: 2 }]]);
+      await settle();
+      log({ claims: client.getCurrentAuthClaims()?.decoded });
+      await client.close();
+    });
+  });
+
+  test("a fresh token rejected too often gives up", async () => {
+    await expectParity(async ({ impl, server, log, settle }) => {
+      const client = new impl.BaseConvexClient(
+        URL,
+        () => {},
+        clientOptions(server),
+      );
+      server.open();
+      client.setAuth(
+        fetcher(log, [
+          null,
+          jwt("a", 1, 3601),
+          jwt("b", 1, 3601),
+          jwt("c", 1, 3601),
+          jwt("d", 1, 3601),
+        ]),
+        (isAuthenticated) => log({ onChange: isAuthenticated }),
+        (isRefreshing) => log({ onRefreshChange: isRefreshing }),
+      );
+      await settle();
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const sockets = server.sockets.length;
+        server.authError("invalid", { authUpdateAttempted: true });
+        await settle();
+        if (server.sockets.length > sockets) server.open();
+        await settle();
+      }
+      log({ hasAuth: client.hasAuth() });
+      await client.close();
+    });
+  });
+
+  test("initialAuthTokenReuse keeps the cached token", async () => {
+    await expectParity(async ({ impl, server, log, checkpoint, settle }) => {
+      vi.setSystemTime(1_000_000);
+      const client = new impl.BaseConvexClient(URL, () => {}, {
+        ...clientOptions(server),
+        initialAuthTokenReuse: true,
+      });
+      server.open();
+      client.setAuth(
+        fetcher(log, [jwt("cached", 900, 1100), jwt("fresh", 1080, 1200)]),
+        (isAuthenticated) => log({ onChange: isAuthenticated }),
+      );
+      await settle();
+      // The server's clock is 20s behind: 120s left on the cached token.
+      server.transition([], { clientClockSkew: 20_000 });
+      await settle();
+      for (let second = 0; second < 109; second += 10) {
+        server.push({ type: "Ping" });
+        await vi.advanceTimersByTimeAsync(10_000);
+      }
+      log("before refetch");
+      await vi.advanceTimersByTimeAsync(2_000);
+      await checkpoint("refetched");
+      await client.close();
+    });
+  });
+
+  test("expectAuth holds requests until the first token", async () => {
+    await expectParity(async ({ impl, server, log, checkpoint, settle }) => {
+      const client = new impl.BaseConvexClient(URL, () => {}, {
+        ...clientOptions(server),
+        expectAuth: true,
+      });
+      server.open();
+      client.subscribe("notes:list", {});
+      const mutation = caught(client.mutation("notes:add", {}));
+      await checkpoint("held");
+      log({ state: client.connectionState() });
+      client.setAuth(fetcher(log, [jwt("cached", 1, 3601)]), (value) =>
+        log({ onChange: value }),
+      );
+      await checkpoint("sent");
+      server.respond(0, { value: "ok" });
+      server.transition([["notes:list", {}, { value: [] }]]);
+      log(await mutation);
+      await settle();
+      await client.close();
+    });
+  });
+
+  test("setAuth during a token fetch wins", async () => {
+    await expectParity(async ({ impl, server, log, checkpoint, settle }) => {
+      const client = new impl.BaseConvexClient(
+        URL,
+        () => {},
+        clientOptions(server),
+      );
+      server.open();
+      let release!: (token: string) => void;
+      client.setAuth(
+        () => new Promise<string>((resolve) => (release = resolve)),
+        (value) => log({ first: value }),
+      );
+      await settle();
+      client.setAuth(fetcher(log, [jwt("second", 1, 3601)]), (value) =>
+        log({ second: value }),
+      );
+      release(jwt("first", 1, 3601));
+      await checkpoint("raced");
+      server.transition([]);
+      await settle();
+      await client.close();
+    });
+  });
+});

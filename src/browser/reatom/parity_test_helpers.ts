@@ -255,6 +255,8 @@ export class FakeServer {
     };
     const start = this.model.sent;
     this.model.sent = end;
+    if (process.env.PARITY_VERBOSE)
+      this.trace.push({ sending: { start, end } });
     this.push({
       type: "Transition",
       startVersion: { ...start, ts: encodeTs(start.ts) },
