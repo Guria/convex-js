@@ -242,6 +242,7 @@
     "Most CLI tool dependencies go in devDependencies instead because the CLI is distributed bundled."
   ],
   "dependencies": {
+    "@reatom/core": "https://pkg.pr.new/@reatom/core@5f42184",
     "esbuild": "0.27.0",
     "prettier": "^3.0.0",
     "ws": "8.21.0"
@@ -307,6 +308,7 @@
     "chalk": "5",
     "chokidar": "3.6.0",
     "commander": "^14.0.3",
+    "convex-upstream": "npm:convex@1.48.0",
     "deep-equal": "2.2.3",
     "depcheck": "~1.4.7",
     "detect-port": "^2.1.0",
