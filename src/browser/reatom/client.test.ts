@@ -1,8 +1,20 @@
 import { atom, computed, context, noop } from "@reatom/core";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  expectTypeOf,
+  test,
+  vi,
+} from "vitest";
 import { makeFunctionReference } from "../../server/api.js";
 import { ConvexError } from "../../values/errors.js";
-import { internals, reatomConvexClient } from "./client.js";
+import {
+  internals,
+  reatomConvexClient,
+  type ReatomConvexClient,
+} from "./client.js";
 import { clientOptions, FakeServer, settle } from "./parity_test_helpers.js";
 
 const URL = "https://happy-otter-123.convex.cloud";
@@ -245,4 +257,21 @@ describe("reatomConvexClient", () => {
     await first.run(() => convex.close());
     await second.run(() => convex.close());
   });
+});
+
+test("function references type arguments and results", () => {
+  const typed = (convex: ReatomConvexClient) => {
+    expectTypeOf(convex.query(get, { id: 1 }).data()).toEqualTypeOf<
+      string | undefined
+    >();
+    // @ts-expect-error `id` is a number
+    convex.query(get, { id: "1" });
+    expectTypeOf(
+      convex.paginatedQuery(page, {}, { initialNumItems: 1 }).results(),
+    ).toEqualTypeOf<number[]>();
+    expectTypeOf(convex.mutation(add, { text: "a" })).toEqualTypeOf<
+      Promise<null>
+    >();
+  };
+  expect(typed).toBeTypeOf("function");
 });

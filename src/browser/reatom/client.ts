@@ -361,12 +361,13 @@ type ActionRef =
   | FunctionReference<"action">
   | FunctionReference_future<"action">
   | string;
-type ReturnOf<Ref> = Ref extends string ? any : FunctionReturnType<Ref & any>;
+type AnyRef = FunctionReference<any, any> | FunctionReference_future<any, any>;
+type ReturnOf<Ref> = Ref extends AnyRef ? FunctionReturnType<Ref> : any;
 type PaginatedItemOf<Ref> =
   ReturnOf<Ref> extends { page: Array<infer Item> } ? Item : any;
-type ArgsOf<Ref> = Ref extends string
-  ? Record<string, Value>
-  : FunctionArgs<Ref & any>;
+type ArgsOf<Ref> = Ref extends AnyRef
+  ? FunctionArgs<Ref>
+  : Record<string, Value>;
 
 const functionName = (ref: { toString(): string } | string): string =>
   typeof ref === "string" ? ref : getFunctionName(ref as any);
