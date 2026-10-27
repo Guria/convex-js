@@ -5,9 +5,11 @@ On this branch the sync client keeps its state in
 `ConvexClient`, `PaginatedQueryClient` and everything in `convex/react` keep
 their API and run on top of it. Reatom apps can use the atoms directly.
 
-`@reatom/core` comes from the pkg.pr.new preview of the `v1001` branch at
+`@reatom/core` is a peer dependency, so the client's atoms share the app's
+Reatom context; a second copy would give them a context of their own. The
+branch develops against the pkg.pr.new preview of the `v1001` branch at
 `reatom/reatom@5f42184`, which includes the fix that lets Node exit with Reatom
-loaded. The CLI runs `BaseConvexClient` in Node.
+loaded. The CLI bundles its own copy, since it runs `BaseConvexClient` in Node.
 
 ## The Reatom API
 

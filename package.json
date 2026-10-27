@@ -242,12 +242,12 @@
     "Most CLI tool dependencies go in devDependencies instead because the CLI is distributed bundled."
   ],
   "dependencies": {
-    "@reatom/core": "https://pkg.pr.new/@reatom/core@5f42184",
     "esbuild": "0.27.0",
     "prettier": "^3.0.0",
     "ws": "8.21.0"
   },
   "peerDependencies": {
+    "@reatom/core": "^1001.3.0",
     "@auth0/auth0-react": "^2.0.1",
     "@clerk/clerk-react": "^4.12.8 || ^5.0.0",
     "@clerk/react": "^6.4.3",
@@ -289,6 +289,7 @@
     "@inquirer/testing": "^3.3.0",
     "@modelcontextprotocol/server": "^2.3.0",
     "@octokit/openapi-types": "~27.0.0",
+    "@reatom/core": "https://pkg.pr.new/@reatom/core@5f42184",
     "@sentry/node": "^7.23.0",
     "@sentry/tracing": "^7.23.0",
     "@swc/core": "1.15.8",
