@@ -78,7 +78,6 @@ import {
   canonicalizeUdfPath,
   QueryToken,
   serializePaginatedPathAndArgs,
-  serializePathAndArgs,
 } from "../sync/udf_path_utils.js";
 import { AuthSync, AuthTokenFetcher, reatomAuth } from "./auth.js";
 import { withConnectionHooks } from "./connection_hooks.js";
@@ -379,6 +378,8 @@ const INITIAL_VERSION: StateVersion = {
 };
 
 type QueryEntry = ReatomQuery & {
+  /** The runtime of the context the entry belongs to. */
+  readonly rt: ClientRuntime;
   readonly result: Atom<FunctionResult | undefined>;
   readonly componentPath: string | undefined;
   /** Assigned while the server knows the query or is about to. */
@@ -717,7 +718,7 @@ export function reatomConvexClient(
 
   /** The server no longer has `entry`, or never will. */
   const forget = (entry: QueryEntry) => {
-    const rt = peek(runtime);
+    const { rt } = entry;
     rt.byId.delete(entry.id!);
     rt.outstandingQueriesOlderThanRestart.delete(entry.id!);
     entry.id = null;
@@ -728,8 +729,7 @@ export function reatomConvexClient(
     rt.entries.release(entry);
   };
 
-  const takePending = () => {
-    const rt = peek(runtime);
+  const takePending = (rt: ClientRuntime) => {
     const modifications: Array<AddQuery | RemoveQuery> = [];
     for (const entry of rt.pending.values()) {
       if (entry.op === "Add") {
@@ -753,14 +753,13 @@ export function reatomConvexClient(
       type: "ModifyQuerySet",
       baseVersion,
       newVersion: baseVersion + 1,
-      modifications: takePending(),
+      modifications: takePending(rt),
     };
     querySetVersion.set(baseVersion + 1);
     socket.send(modification);
   };
 
-  const scheduleFlush = () => {
-    const rt = peek(runtime);
+  const scheduleFlush = (rt: ClientRuntime) => {
     if (rt.flushScheduled) return;
     rt.flushScheduled = true;
     if (rt.flush === noop) rt.flush = wrap(flush, rt.root);
@@ -768,8 +767,8 @@ export function reatomConvexClient(
   };
 
   const connectEntry = (entry: QueryEntry) => {
-    start();
-    const rt = peek(runtime);
+    const { rt } = entry;
+    if (!rt.started) start();
     if (rt.closed) return;
     // Resubscribed before its removal went out: the server still has it.
     if (entry.op === "Remove") {
@@ -782,11 +781,11 @@ export function reatomConvexClient(
     entry.op = "Add";
     rt.byId.set(queryId, entry);
     rt.pending.set(queryId, entry);
-    scheduleFlush();
+    scheduleFlush(rt);
   };
 
   const disconnectEntry = (entry: QueryEntry) => {
-    const rt = peek(runtime);
+    const { rt } = entry;
     if (entry.id === null) return;
     // Never sent: nothing to remove.
     if (entry.op === "Add") {
@@ -797,16 +796,16 @@ export function reatomConvexClient(
     rt.outstandingQueriesOlderThanRestart.delete(entry.id);
     entry.op = "Remove";
     rt.pending.set(entry.id, entry);
-    scheduleFlush();
+    scheduleFlush(rt);
   };
 
   const createEntry = (
+    rt: ClientRuntime,
     token: QueryToken,
     udfPath: string,
     args: Record<string, Value>,
     queryOptions: ReatomQueryOptions | undefined,
   ): QueryEntry => {
-    const rt = peek(runtime);
     const visible = rt.overlay.get(token)?.result;
     const result = atom<FunctionResult | undefined>(
       visible,
@@ -816,6 +815,7 @@ export function reatomConvexClient(
     let error: Computed<Error | undefined> | undefined;
     let status: Computed<QueryStatus> | undefined;
     const entry: QueryEntry = {
+      rt,
       token,
       udfPath,
       args,
@@ -867,11 +867,16 @@ export function reatomConvexClient(
     args: Record<string, Value>,
     queryOptions?: ReatomQueryOptions,
   ): QueryEntry => {
+    const rt = peek(runtime);
     const canonical = canonicalizeUdfPath(udfPath);
-    const token = serializePathAndArgs(canonical, args);
-    const existing = lookup(token);
+    // `serializePathAndArgs` without canonicalizing the path again.
+    const token = JSON.stringify({
+      udfPath: canonical,
+      args: convexToJson(args),
+    }) as QueryToken;
+    const existing = rt.entries.get(token);
     if (existing === undefined) {
-      return createEntry(token, canonical, args, queryOptions);
+      return createEntry(rt, token, canonical, args, queryOptions);
     }
     // A journal only applies to a new subscription.
     if (existing.id === null && queryOptions?.journal !== undefined) {
@@ -1174,7 +1179,7 @@ export function reatomConvexClient(
         type: "ModifyQuerySet",
         baseVersion,
         newVersion: baseVersion + 1,
-        modifications: takePending(),
+        modifications: takePending(rt),
       };
       querySetVersion.set(baseVersion + 1);
     }
