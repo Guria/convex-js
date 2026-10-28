@@ -220,3 +220,19 @@ test("data follows the session store", () => {
     expect(provider.data()).toMatchObject({ user: { email: "a@b.c" } });
   });
 });
+
+test("one-time token completion survives reconnect", async () => {
+  history.replaceState(null, "", "/notes?ott=abc&tab=1");
+  const frame = context.start();
+  const fake = fakeClient();
+  const provider = reatomBetterAuthProvider(fake.client);
+  const unsubscribe = frame.run(() => provider.isLoading.subscribe(noop));
+  unsubscribe();
+  const stop = frame.run(() => provider.isLoading.subscribe(noop));
+  await settle();
+  expect(location.search).toBe("?tab=1");
+  expect(fake.client.crossDomain.oneTimeToken.verify).toHaveBeenCalledTimes(1);
+  expect(fake.client.getSession).toHaveBeenCalledTimes(1);
+  expect(fake.client.updateSession).toHaveBeenCalledTimes(1);
+  stop();
+});

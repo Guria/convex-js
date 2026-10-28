@@ -292,3 +292,89 @@ test("a failed code exchange lands in completeSignIn.error", async () => {
   });
   await close();
 });
+
+test.each([false, true])(
+  "restoration survives reconnect with async storage=%s",
+  async (asyncStorage) => {
+    const frame = context.start();
+    const convex = reatomConvexClient(URL, clientOptions(server));
+    const value = jwt({ sub: "user1|session1" });
+    localStorage.setItem(JWT_KEY, value);
+    const provider = reatomConvexAuthProvider(
+      convex,
+      asyncStorage
+        ? {
+            storage: {
+              getItem: async (key) => localStorage.getItem(key),
+              setItem: async (key, value) => localStorage.setItem(key, value),
+              removeItem: async (key) => localStorage.removeItem(key),
+            },
+          }
+        : {},
+    );
+    const unsubscribe = frame.run(() => provider.isLoading.subscribe(noop));
+    unsubscribe();
+    const stop = frame.run(() => provider.isLoading.subscribe(noop));
+    await settle();
+    frame.run(() => {
+      expect(provider.isLoading()).toBe(false);
+      expect(provider.token()).toBe(value);
+    });
+    stop();
+  },
+);
+
+test("OAuth code completion survives reconnect", async () => {
+  history.replaceState(null, "", "/notes?code=abc");
+  const frame = context.start();
+  const convex = reatomConvexClient(URL, clientOptions(server));
+  const provider = reatomConvexAuthProvider(convex);
+  const unsubscribe = frame.run(() => provider.token.subscribe(noop));
+  unsubscribe();
+  const stop = frame.run(() => provider.token.subscribe(noop));
+  await settle();
+  open();
+  await settle();
+  expect(lastAction()).toMatchObject({ args: [{ params: { code: "abc" } }] });
+  server.respond(lastAction().requestId, {
+    value: {
+      tokens: { token: jwt({ sub: "user1|session1" }), refreshToken: "r1" },
+    },
+  });
+  await settle();
+  frame.run(() => {
+    expect(provider.isLoading()).toBe(false);
+    expect(provider.token()).not.toBeNull();
+  });
+  expect(location.search).toBe("");
+  stop();
+  await frame.run(() => convex.close());
+});
+
+test("storage listeners detach on disconnect and reattach once", async () => {
+  const frame = context.start();
+  const convex = reatomConvexClient(URL, clientOptions(server));
+  const value = jwt({ sub: "user1|session1" });
+  localStorage.setItem(JWT_KEY, value);
+  const provider = reatomConvexAuthProvider(convex);
+  let stop = frame.run(() => provider.token.subscribe(noop));
+  await settle();
+  stop();
+  await settle();
+  const other = jwt({ sub: "user2|session2" });
+  const notify = () =>
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: JWT_KEY,
+        newValue: other,
+        storageArea: localStorage,
+      }),
+    );
+  notify();
+  frame.run(() => expect(provider.token()).toBe(value));
+  stop = frame.run(() => provider.token.subscribe(noop));
+  await settle();
+  notify();
+  frame.run(() => expect(provider.token()).toBe(other));
+  stop();
+});

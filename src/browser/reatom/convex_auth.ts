@@ -9,10 +9,13 @@
  * formats are `@convex-dev/auth/react`'s, so its sessions carry over.
  */
 import {
+  abortVar,
   action,
   atom,
   computed,
   peek,
+  onEvent,
+  sleep,
   withAsync,
   withConnectHook,
   wrap,
@@ -165,18 +168,14 @@ export function reatomConvexAuthProvider(
 
   const token = atom<string | null>(null, `${name}.token`).extend(
     withConnectHook(() => {
-      void start();
-      const stopFollowing = followStorage();
-      const stopWarning = warnOnUnload();
-      return () => {
-        stopFollowing?.();
-        stopWarning?.();
-      };
+      void abortVar.spawn(start);
+      followStorage();
+      warnOnUnload();
     }),
   );
   const restoring = atom(true, `${name}._restoring`).extend(
     withConnectHook(() => {
-      void start();
+      void abortVar.spawn(start);
     }),
   );
   const isRefreshingToken = atom(false, `${name}.isRefreshingToken`);
@@ -220,7 +219,7 @@ export function reatomConvexAuthProvider(
         if (!(error instanceof TypeError) || retry >= RETRY_BACKOFF.length)
           throw error;
         const delay = RETRY_BACKOFF[retry]! + RETRY_JITTER * Math.random();
-        await wrap(new Promise((resolve) => setTimeout(resolve, delay)));
+        await wrap(sleep(delay));
       }
     }
   };
@@ -342,25 +341,21 @@ export function reatomConvexAuthProvider(
   // Follows the token other tabs or frames write to the same storage.
   const followStorage = () => {
     if (typeof window === "undefined") return undefined;
-    const listener = wrap((event: StorageEvent) => {
+    return onEvent(window, "storage", (event) => {
       if (event.storageArea !== storage() || event.key !== key(JWT_KEY)) return;
       // Each key comes as its own event; the refresh token stays in storage.
       apply(event.newValue);
     });
-    window.addEventListener("storage", listener);
-    return () => window.removeEventListener("storage", listener);
   };
 
   // Leaving during a refresh token exchange can lose the new pair.
   const warnOnUnload = () => {
     if (typeof window === "undefined") return undefined;
-    const listener = wrap((event: BeforeUnloadEvent) => {
+    return onEvent(window, "beforeunload", (event) => {
       if (!peek(isRefreshingToken)) return;
       event.preventDefault();
       event.returnValue = true;
     });
-    window.addEventListener("beforeunload", listener);
-    return () => window.removeEventListener("beforeunload", listener);
   };
 
   return {

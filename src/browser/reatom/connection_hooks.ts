@@ -1,22 +1,20 @@
-import type { AbortExt, Action, AtomLike, Ext } from "@reatom/core";
+import {
+  abortVar,
+  withConnectHook,
+  type AtomLike,
+  type Ext,
+} from "@reatom/core";
 
 /**
- * Calls `connect` when `target` gains its first subscriber and `disconnect`
- * when it loses the last one. `target` must have no other connect hook.
- *
- * Sets Reatom's internal `onConnect` slot to plain functions: Reatom's queue
- * calls them in the context's root frame. Unlike `withConnectHook` this makes
- * no actions, AbortController or AbortError per connection, which matters
- * with thousands of queries.
+ * Composes with other public Reatom connection hooks. Client work belongs to
+ * the context, not to a subscriber's abort scope; losing a subscription must
+ * not cancel a socket operation or a scheduled query-set flush.
  */
-export const withConnectionHooks =
-  <Target extends AtomLike>(
-    connect: () => void,
-    disconnect: () => void,
-  ): Ext<Target> =>
-  (target) => {
-    target.__reatom.onConnect = Object.assign(() => connect(), {
-      abort: () => disconnect(),
-    }) as unknown as Action & AbortExt;
-    return target;
-  };
+export const withConnectionHooks = <Target extends AtomLike>(
+  connect: () => void,
+  disconnect: () => void,
+): Ext<Target> =>
+  withConnectHook(() => {
+    abortVar.spawn(connect);
+    return disconnect;
+  });

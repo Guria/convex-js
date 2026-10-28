@@ -10,7 +10,7 @@
  * server's clock skew. When the server rejects a token, the socket stops, a
  * fresh token is fetched and sent, and the socket restarts.
  */
-import { atom, context, peek, wrap, type Frame } from "@reatom/core";
+import { action, atom, context, peek, wrap, type Frame } from "@reatom/core";
 import { Logger } from "../logging.js";
 import { AuthError, Transition } from "../sync/protocol.js";
 import { jwtDecode } from "../../vendor/jwt-decode/index.js";
@@ -244,6 +244,8 @@ export function reatomAuth(
       );
       delay = 0;
     }
+    // Owned by the auth state machine, not a query subscription. Changing
+    // config or stopping auth cancels this in resetAuthState.
     const refetchTokenTimeoutId = setTimeout(
       wrap(() => {
         logVerbose("running scheduled token refetch");
@@ -261,7 +263,7 @@ export function reatomAuth(
 
   // Force-fetches a token and schedules the next refetch once the server
   // confirms it, so an active client never has to reauthenticate.
-  const refetchToken = async () => {
+  const refetchToken = action(async () => {
     const current = state();
     if (current.state === "noAuth") return;
     logVerbose("refetching auth token");
@@ -293,11 +295,11 @@ export function reatomAuth(
     // In case a scheduled refetch ran during a reauthentication.
     logVerbose("restarting WS after auth token fetch (if currently stopped)");
     sync.tryRestartSocket();
-  };
+  }, `${name}._refetchToken`);
 
   // Like `refetchToken`, but with the socket stopped so requests don't retry
   // with the rejected token.
-  const tryToReauthenticate = async (serverMessage: AuthError) => {
+  const tryToReauthenticate = action(async (serverMessage: AuthError) => {
     logVerbose(`attempting to reauthenticate: ${serverMessage.error}`);
     const current = state();
     const rt = peek(runtime);
@@ -357,17 +359,14 @@ export function reatomAuth(
       setAndReportAuthFailed(latest.config.onAuthChange);
     }
     sync.tryRestartSocket();
-  };
+  }, `${name}._reauthenticate`);
 
-  return {
-    /** The auth state machine. */
-    state,
-
-    async setConfig(
+  const setConfig = action(
+    async (
       fetchToken: AuthTokenFetcher,
       onChange: (isAuthenticated: boolean) => void,
       onRefreshChange?: (isRefreshing: boolean) => void,
-    ) {
+    ) => {
       resetAuthState();
       logVerbose("pausing WS for auth token fetch");
       sync.pauseSocket();
@@ -397,6 +396,14 @@ export function reatomAuth(
       logVerbose("resuming WS after auth token fetch");
       sync.resumeSocket();
     },
+    `${name}.setConfig`,
+  );
+
+  return {
+    /** The auth state machine. */
+    state,
+
+    setConfig,
 
     onTransition(serverMessage: Transition) {
       // Stale: the client has moved on to a newer identity.

@@ -5,6 +5,7 @@
  * itself; its session store tells this provider.
  */
 import {
+  abortVar,
   action,
   atom,
   computed,
@@ -129,7 +130,7 @@ export function reatomBetterAuthProvider<Client extends BetterAuthClient>(
     `${name}.sessionState`,
   ).extend(
     withConnectHook((target) => {
-      void start();
+      void abortVar.spawn(start);
       return authClient.useSession.subscribe(
         wrap((value: SessionState) => {
           const previous = peek(target).data?.session?.id;

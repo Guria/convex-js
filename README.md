@@ -24,11 +24,11 @@ import type { Id } from "../convex/_generated/dataModel";
 
 const convex = reatomConvexClient(import.meta.env.VITE_CONVEX_URL);
 
-const noteId = atom<Id<"notes"> | null>(null);
+const noteId = atom<Id<"notes"> | null>(null, "noteId");
 const note = computed(() => {
   const id = noteId();
   return id ? convex.query(api.notes.get, { id }).data() : undefined;
-});
+}, "note");
 ```
 
 - `convex.query(ref, args)` returns the entry for that function and arguments,
