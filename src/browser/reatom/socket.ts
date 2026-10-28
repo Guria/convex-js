@@ -145,7 +145,7 @@ export function reatomSocket(
   const state = atom<SocketState>({ state: "disconnected" }, `${name}.state`);
   const connectionCount = atom(0, `${name}.connectionCount`);
   /** Consecutive failed connections, reset once the client syncs past a reconnect. */
-  const retries = atom(0, `${name}.retries`);
+  const retries = atom(0, `${name}._retries`);
   const hasEverConnected = atom(false, `${name}.hasEverConnected`);
   const runtime = atom(
     (): SocketRuntime => ({
@@ -246,6 +246,8 @@ export function reatomSocket(
     return transition;
   };
 
+  // Socket timers outlive individual subscribers. terminate clears both
+  // inactivity and reconnect timers; each reschedule cancels its predecessor.
   const resetServerInactivityTimeout = () => {
     if (state().state === "terminated") return;
     const rt = peek(runtime);

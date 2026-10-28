@@ -275,3 +275,22 @@ test("function references type arguments and results", () => {
   };
   expect(typed).toBeTypeOf("function");
 });
+
+test("query trace names distinguish arguments without including their values", () => {
+  const frame = context.start();
+  const convex = reatomConvexClient(URL, clientOptions(server));
+  frame.run(() => {
+    const first = convex.query(get, { id: 123456789 });
+    const second = convex.query(get, { id: 987654321 });
+    expect(first.result.name).not.toBe(second.result.name);
+    expect(first.result.name).toContain("notes:get");
+    expect(first.result.name).not.toContain("123456789");
+    expect(convex.query(get, { id: 123456789 }).result.name).toBe(
+      first.result.name,
+    );
+    const one = convex.paginatedQuery(page, {}, { initialNumItems: 1 });
+    const two = convex.paginatedQuery(page, {}, { initialNumItems: 2 });
+    expect(one.results.name).not.toBe(two.results.name);
+    expect(one.results.name).toContain("notes:page");
+  });
+});

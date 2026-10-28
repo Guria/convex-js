@@ -528,13 +528,13 @@ export function reatomConvexClient(
     );
   }
 
-  const querySetVersion = atom(0, `${name}.querySetVersion`);
-  const identityVersion = atom<IdentityVersion>(0, `${name}.identityVersion`);
+  const querySetVersion = atom(0, `${name}._querySetVersion`);
+  const identityVersion = atom<IdentityVersion>(0, `${name}._identityVersion`);
   /** The version of the query results received on the current connection. */
-  const remoteVersion = atom(INITIAL_VERSION, `${name}.remoteVersion`);
+  const remoteVersion = atom(INITIAL_VERSION, `${name}._remoteVersion`);
   const maxObservedTimestamp = atom<TS | undefined>(
     undefined,
-    `${name}.maxObservedTimestamp`,
+    `${name}._maxObservedTimestamp`,
   );
   /** The token the server is told about. */
   const authToken = atom<AuthToken | undefined>(undefined, `${name}.authToken`);
@@ -559,6 +559,10 @@ export function reatomConvexClient(
     `${name}.optimisticUpdates`,
   );
 
+  let nextTraceId = 0;
+
+  // Transport handles and query indexes are mutable per-context bookkeeping.
+  // Public results are atoms; these indexes deliberately are not rollback state.
   const runtime = atom(
     (): ClientRuntime => ({
       root: context(),
@@ -749,7 +753,7 @@ export function reatomConvexClient(
     return modifications;
   };
 
-  const flush = () => {
+  const flush = action(() => {
     const rt = peek(runtime);
     rt.flushScheduled = false;
     if (rt.pending.size === 0 || rt.paused || rt.closed) return;
@@ -762,7 +766,7 @@ export function reatomConvexClient(
     };
     querySetVersion.set(baseVersion + 1);
     socket.send(modification);
-  };
+  }, `${name}._flush`);
 
   const scheduleFlush = (rt: ClientRuntime) => {
     if (rt.flushScheduled) return;
@@ -814,7 +818,7 @@ export function reatomConvexClient(
     const visible = rt.overlay.get(token)?.result;
     const result = atom<FunctionResult | undefined>(
       visible,
-      `${name}.query#${udfPath}`,
+      `${name}.query#${udfPath}#${nextTraceId++}`,
     );
     let data: Computed<Value | undefined> | undefined;
     let error: Computed<Error | undefined> | undefined;
@@ -1293,7 +1297,7 @@ export function reatomConvexClient(
     ingest(changed, removeCompleted(message.endVersion.ts), removed);
   };
 
-  const onMessage = (serverMessage: ServerMessage) => {
+  const onMessage = action((serverMessage: ServerMessage) => {
     const rt = peek(runtime);
     // Once per client: metrics grow with reconnects.
     if (!rt.firstMessageReceived) {
@@ -1340,7 +1344,7 @@ export function reatomConvexClient(
       }
     }
     return hasSyncedPastLastReconnect();
-  };
+  }, `${name}._onMessage`);
 
   const socket = reatomSocket(
     wsUri,
@@ -1584,7 +1588,7 @@ export function reatomConvexClient(
       canonical,
       args,
       paginatedOptions,
-      `${name}.paginatedQuery#${canonical}`,
+      `${name}.paginatedQuery#${canonical}#${nextTraceId++}`,
     );
     paginated.set(created);
     return created;
