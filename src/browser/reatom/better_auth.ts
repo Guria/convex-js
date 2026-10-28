@@ -23,7 +23,7 @@ import type { AuthProvider } from "./auth_state.js";
 export type { AuthProvider } from "./auth_state.js";
 
 type SessionState = {
-  data: { session?: { id: string } | null } | null;
+  data: { session?: { id: string } | null | undefined } | null;
   isPending: boolean;
 };
 type SessionData<Client extends BetterAuthClient> = ReturnType<
@@ -44,9 +44,9 @@ export type BetterAuthClient = {
     subscribe(listener: (value: SessionState) => void): () => void;
   };
   convex: {
-    token(options: {
-      fetchOptions: { throw: false };
-    }): Promise<{ data?: { token?: string | null } | null }>;
+    token(options: { fetchOptions: { throw: false } }): Promise<{
+      data?: { token?: string | null | undefined } | null | undefined;
+    }>;
   };
   getSession(options?: {
     fetchOptions?: { headers?: Record<string, string> };
@@ -54,8 +54,11 @@ export type BetterAuthClient = {
   crossDomain?: {
     oneTimeToken: {
       verify(args: { token: string }): Promise<{
-        data?: { session?: { token: string } | null } | null;
-        error?: { message?: string } | null;
+        data?:
+          | { session?: { token: string } | null | undefined }
+          | null
+          | undefined;
+        error?: { message?: string | undefined } | null | undefined;
       }>;
     };
   };
@@ -68,7 +71,7 @@ export type BetterAuthOptions = {
   initialToken?: string | null;
   /**
    * Whether an `ott` query param on start is a one-time token to sign in with;
-   * `true` by default when the client has `crossDomainClient()`.
+   * `true` by default. Only `crossDomainClient()` sends one.
    */
   shouldHandleOneTimeToken?: boolean;
   /** Drops `ott` from the address; `history.replaceState` by default. */
@@ -141,10 +144,10 @@ export function reatomBetterAuthProvider<Client extends BetterAuthClient>(
   );
 
   const completeSignIn = action(async (oneTimeToken: string) => {
-    if (!authClient.crossDomain)
-      throw new Error("The better-auth client has no crossDomainClient()");
+    // better-auth's client answers every property, so a missing plugin shows
+    // up as a failed request rather than an undefined `crossDomain`.
     const result = await wrap(
-      authClient.crossDomain.oneTimeToken.verify({ token: oneTimeToken }),
+      authClient.crossDomain!.oneTimeToken.verify({ token: oneTimeToken }),
     );
     const session = result.data?.session;
     if (!session)
@@ -161,9 +164,11 @@ export function reatomBetterAuthProvider<Client extends BetterAuthClient>(
   const start = action(async () => {
     if (peek(started)) return;
     started.set(true);
-    const handle =
-      options.shouldHandleOneTimeToken ?? authClient.crossDomain !== undefined;
-    if (!handle || typeof location === "undefined") return;
+    if (
+      options.shouldHandleOneTimeToken === false ||
+      typeof location === "undefined"
+    )
+      return;
     const url = new URL(location.href);
     const ott = url.searchParams.get("ott");
     if (!ott) return;
