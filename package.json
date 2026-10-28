@@ -29,6 +29,10 @@
       "types": "./dist/browser/reatom/convex_auth.d.ts",
       "default": "./dist/browser/reatom/convex_auth.js"
     },
+    "./better-auth": {
+      "types": "./dist/browser/reatom/better_auth.d.ts",
+      "default": "./dist/browser/reatom/better_auth.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
