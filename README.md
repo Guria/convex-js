@@ -153,8 +153,9 @@ Node 22 and later have a global `WebSocket`. On Node 20, pass one, such as the
   convex/browser's `BaseConvexClient`. The Reatom functions it uses add 4.6 KiB,
   shared with the rest of the app.
 
-With 1000 components each running its own query in Chromium, mounting takes 9.24
-ms against 65.5 ms for convex/react, unmounting 1.99 ms against 9.87 ms.
+With 1000 components each running its own query in Chromium and @reatom/jsx
+rendering, mounting takes 6.28 ms against 54.2 ms for convex/react, unmounting
+0.75 ms against 7.93 ms.
 [CONTRIBUTING.md](https://github.com/reatomized/convex/blob/reatom/CONTRIBUTING.md#performance)
 has the full table and how it was measured.
 

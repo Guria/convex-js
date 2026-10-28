@@ -101,15 +101,22 @@ PARITY_TRACE=/tmp/trace.json npx vitest run -t "<scenario>"
 
 ## Performance
 
-Measured in the
-[reatom-convex-auth bench](https://github.com/Guria/reatom-convex-auth/blob/exp/reatom-native-convex-client/packages/bench/RESULTS_ARTIFACTS.md)
-at `a5c9bed`, 1000 components each with its own query, Chromium, medians:
+Measured by the
+[convex-demo bench](https://github.com/reatomized/convex-demo/blob/226566179f762eb1c1eaf5ba7012e2a4d5d893f3/packages/bench/RESULTS.md)
+with `@reatomized/convex` 0.3.0, 1000 components each with its own query,
+Chromium, medians. The server answers each query-set message with its own
+transition, so convex/react's one message per subscription costs it 1001
+transitions on mount:
 
-| Scenario   | convex@1.48.0, convex/react | Reatom client, @reatom/jsx |
-| ---------- | --------------------------: | -------------------------: |
-| mount      |                     65.5 ms |                    9.24 ms |
-| unmount    |                     9.87 ms |                    1.99 ms |
-| update all |                     4.12 ms |                    3.15 ms |
+| Scenario   | convex 1.48.0, convex/react | @reatomized/convex, @reatom/react | @reatomized/convex, @reatom/jsx |
+| ---------- | --------------------------: | --------------------------------: | ------------------------------: |
+| mount      |                     54.2 ms |                           13.1 ms |                         6.28 ms |
+| unmount    |                     7.93 ms |                           1.87 ms |                         0.75 ms |
+| update all |                     3.16 ms |                           5.19 ms |                         1.89 ms |
+
+When the server coalesces a burst of query-set messages into one transition,
+mount is 11.5 ms for convex/react, 13.6 ms with @reatom/react and 5.98 ms with
+@reatom/jsx. The results page has both response shapes and bundle sizes.
 
 ## Syncing with upstream
 
