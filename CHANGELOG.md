@@ -6,6 +6,8 @@
   Claude Code and Codex on macOS and Linux. It works with the terminal CLIs, the
   desktop apps and the VS Code extensions. Running it again upgrades the plugin
   to the latest version.
+- This version drops support for Node.js 20. Please update to Node.js 22 or
+  newer.
 
 ## 1.48.0
 
