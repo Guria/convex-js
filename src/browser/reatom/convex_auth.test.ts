@@ -272,3 +272,23 @@ test("signs out locally when auth:signOut fails", async () => {
   frame.run(() => expect(auth.status()).toBe("unauthenticated"));
   await close();
 });
+
+test("a failed code exchange lands in completeSignIn.error", async () => {
+  history.replaceState(null, "", "/notes?code=stale");
+  const { frame, provider, auth, close } = setup({ replaceURL: vi.fn() });
+  await settle();
+  open();
+  await settle();
+  frame.run(() => expect(auth.status()).toBe("loading"));
+  server.respond(lastAction().requestId, {
+    error: "Invalid verification code",
+  });
+  await settle();
+  frame.run(() => {
+    expect(provider.completeSignIn.error()?.message).toContain(
+      "Invalid verification code",
+    );
+    expect(auth.status()).toBe("unauthenticated");
+  });
+  await close();
+});

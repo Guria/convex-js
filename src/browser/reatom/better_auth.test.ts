@@ -152,7 +152,8 @@ test("trades a one-time token from the URL for the session", async () => {
   const fake = fakeClient();
   const replaceURL = vi.fn();
   const provider = reatomBetterAuthProvider(fake.client, { replaceURL });
-  frame.run(() => provider.session.subscribe(noop));
+  frame.run(() => provider.isLoading.subscribe(noop));
+  frame.run(() => expect(provider.isLoading()).toBe(true));
   await settle();
   expect(replaceURL).toHaveBeenCalledWith(
     new globalThis.URL("https://app.example/notes?tab=1"),
@@ -164,4 +165,36 @@ test("trades a one-time token from the URL for the session", async () => {
     fetchOptions: { headers: { Authorization: "Bearer session-for-abc" } },
   });
   expect(fake.client.updateSession).toHaveBeenCalled();
+  fake.setSession({ data: { session: { id: "s1" } }, isPending: false });
+  frame.run(() => expect(provider.isLoading()).toBe(false));
+});
+
+test("a refused one-time token lands in completeSignIn.error", async () => {
+  const frame = context.start();
+  const fake = fakeClient();
+  fake.client.crossDomain.oneTimeToken.verify.mockResolvedValueOnce({
+    data: null,
+    error: { message: "Invalid token" },
+  } as never);
+  const provider = reatomBetterAuthProvider(fake.client);
+  await expect(
+    frame.run(() => provider.completeSignIn("used")),
+  ).rejects.toThrow("Invalid token");
+  frame.run(() =>
+    expect(provider.completeSignIn.error()?.message).toBe("Invalid token"),
+  );
+});
+
+test("data follows the session store", () => {
+  const frame = context.start();
+  const fake = fakeClient();
+  const provider = reatomBetterAuthProvider(fake.client);
+  fake.setSession({
+    data: { session: { id: "s1" }, user: { email: "a@b.c" } } as never,
+    isPending: false,
+  });
+  frame.run(() => {
+    provider.data.subscribe(noop);
+    expect(provider.data()).toMatchObject({ user: { email: "a@b.c" } });
+  });
 });

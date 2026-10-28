@@ -83,6 +83,8 @@ await convexAuth.signOut();
 whose own client is a React provider. It uses the same storage keys, so sessions
 carry over from `@convex-dev/auth/react`. On start it signs in with a `code`
 from the URL, and it refreshes the token once across tabs.
+`completeSignIn(code)` runs that exchange for an app that reads the URL itself;
+its `error` atom holds a failed exchange either way.
 
 ```ts
 // Better Auth with @convex-dev/better-auth
@@ -104,7 +106,9 @@ await authClient.signIn.email({ email, password });
 Better Auth's client works without a framework, so you sign in through it;
 `reatomBetterAuthProvider` follows its session store, fetches Convex tokens, and
 trades the `ott` one-time token from a cross-domain OAuth redirect for the
-session. Neither entry point adds dependencies.
+session. Its `data` atom is the store's session and user, typed by your client,
+and `completeSignIn(ott)` is the one-time token trade with an `error` atom.
+Neither entry point adds dependencies.
 
 For another library, pass any object with `isLoading` and `session` atoms and a
 `fetchToken` function. `session` should change when the identity does, such as a

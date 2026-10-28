@@ -9,9 +9,13 @@ import {
   atom,
   computed,
   peek,
+  withAsync,
   withConnectHook,
   wrap,
+  type Action,
+  type AsyncExt,
   type AtomLike,
+  type Computed,
 } from "@reatom/core";
 import type { AuthTokenFetcher } from "./auth.js";
 import type { AuthProvider } from "./auth_state.js";
@@ -22,6 +26,9 @@ type SessionState = {
   data: { session?: { id: string } | null } | null;
   isPending: boolean;
 };
+type SessionData<Client extends BetterAuthClient> = ReturnType<
+  Client["useSession"]["get"]
+>["data"];
 
 /**
  * What the provider uses of a client from better-auth's `createAuthClient`
@@ -46,9 +53,10 @@ export type BetterAuthClient = {
   }): Promise<unknown>;
   crossDomain?: {
     oneTimeToken: {
-      verify(args: {
-        token: string;
-      }): Promise<{ data?: { session?: { token: string } | null } | null }>;
+      verify(args: { token: string }): Promise<{
+        data?: { session?: { token: string } | null } | null;
+        error?: { message?: string } | null;
+      }>;
     };
   };
   updateSession?(): void;
@@ -58,14 +66,28 @@ export type BetterAuthClient = {
 export type BetterAuthOptions = {
   /** A Convex token from server rendering, used until the session loads. */
   initialToken?: string | null;
+  /**
+   * Whether an `ott` query param on start is a one-time token to sign in with;
+   * `true` by default when the client has `crossDomainClient()`.
+   */
+  shouldHandleOneTimeToken?: boolean;
   /** Drops `ott` from the address; `history.replaceState` by default. */
   replaceURL?: (url: URL) => void | Promise<void>;
 };
 
 /** @public */
-export type ReatomBetterAuth = AuthProvider & {
+export type ReatomBetterAuth<Data = SessionState["data"]> = AuthProvider & {
+  /** The session store's data: the session and user, `null` when signed out. */
+  readonly data: Computed<Data>;
   /** The last Convex token, `null` without one. */
   readonly token: AtomLike<string | null, []>;
+  /**
+   * Trades the one-time token a cross-domain OAuth redirect comes back with
+   * for the session. Runs on start for an `ott` in the URL; call it when the
+   * app takes the token from the URL itself. Its `error` holds a failed trade.
+   */
+  readonly completeSignIn: Action<[oneTimeToken: string], Promise<void>> &
+    AsyncExt<[oneTimeToken: string], void>;
 };
 
 /**
@@ -83,11 +105,11 @@ export type ReatomBetterAuth = AuthProvider & {
  *
  * @public
  */
-export function reatomBetterAuthProvider(
-  authClient: BetterAuthClient,
+export function reatomBetterAuthProvider<Client extends BetterAuthClient>(
+  authClient: Client,
   options: BetterAuthOptions = {},
   name = "betterAuth",
-): ReatomBetterAuth {
+): ReatomBetterAuth<SessionData<Client>> {
   const token = atom<string | null>(
     options.initialToken ?? null,
     `${name}.token`,
@@ -99,22 +121,45 @@ export function reatomBetterAuthProvider(
   );
 
   const state = atom(
-    () => authClient.useSession.get(),
+    () =>
+      authClient.useSession.get() as ReturnType<Client["useSession"]["get"]>,
     `${name}.sessionState`,
   ).extend(
     withConnectHook((target) => {
-      void verifyOneTimeToken();
+      void start();
       return authClient.useSession.subscribe(
         wrap((value: SessionState) => {
-          target.set(value);
+          target.set(value as ReturnType<Client["useSession"]["get"]>);
           if (!value.data && !value.isPending) token.set(null);
         }),
       );
     }),
   );
 
-  const verifyOneTimeToken = action(async () => {
-    if (typeof location === "undefined" || !authClient.crossDomain) return;
+  const completeSignIn = action(async (oneTimeToken: string) => {
+    if (!authClient.crossDomain)
+      throw new Error("The better-auth client has no crossDomainClient()");
+    const result = await wrap(
+      authClient.crossDomain.oneTimeToken.verify({ token: oneTimeToken }),
+    );
+    const session = result.data?.session;
+    if (!session)
+      throw new Error(result.error?.message ?? "Invalid one-time token");
+    await wrap(
+      authClient.getSession({
+        fetchOptions: { headers: { Authorization: `Bearer ${session.token}` } },
+      }),
+    );
+    authClient.updateSession?.();
+  }, `${name}.completeSignIn`).extend(withAsync());
+
+  const started = atom(false, `${name}._started`);
+  const start = action(async () => {
+    if (peek(started)) return;
+    started.set(true);
+    const handle =
+      options.shouldHandleOneTimeToken ?? authClient.crossDomain !== undefined;
+    if (!handle || typeof location === "undefined") return;
     const url = new URL(location.href);
     const ott = url.searchParams.get("ott");
     if (!ott) return;
@@ -125,18 +170,12 @@ export function reatomBetterAuthProvider(
         ((next: URL) => history.replaceState({}, "", next))
       )(url),
     );
-    const result = await wrap(
-      authClient.crossDomain.oneTimeToken.verify({ token: ott }),
-    );
-    const session = result.data?.session;
-    if (!session) return;
-    await wrap(
-      authClient.getSession({
-        fetchOptions: { headers: { Authorization: `Bearer ${session.token}` } },
-      }),
-    );
-    authClient.updateSession?.();
-  }, `${name}._verifyOneTimeToken`);
+    try {
+      await wrap(completeSignIn(ott));
+    } catch {
+      // Kept in `completeSignIn.error()`.
+    }
+  }, `${name}._start`);
 
   const fetchToken: AuthTokenFetcher = action(
     async ({ forceRefreshToken }: { forceRefreshToken: boolean }) => {
@@ -165,9 +204,10 @@ export function reatomBetterAuthProvider(
 
   return {
     isLoading: computed(
-      () => state().isPending && token() === null,
+      () => (state().isPending && token() === null) || !completeSignIn.ready(),
       `${name}.isLoading`,
     ),
+    data: computed(() => state().data, `${name}.data`),
     // A token from server rendering stands in until the session loads.
     session: computed(() => {
       const id = state().data?.session?.id;
@@ -176,5 +216,6 @@ export function reatomBetterAuthProvider(
     }, `${name}.session`),
     fetchToken,
     token,
+    completeSignIn,
   };
 }

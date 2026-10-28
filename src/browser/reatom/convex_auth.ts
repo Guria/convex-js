@@ -13,9 +13,11 @@ import {
   atom,
   computed,
   peek,
+  withAsync,
   withConnectHook,
   wrap,
   type Action,
+  type AsyncExt,
   type AtomLike,
 } from "@reatom/core";
 import { ConvexHttpClient } from "convex/browser";
@@ -108,6 +110,14 @@ export type ReatomConvexAuth = AuthProvider & {
     ],
     Promise<ConvexAuthSignInResult>
   >;
+  /**
+   * Signs in with the `code` the backend sends the browser back with after
+   * OAuth; `true` when tokens were issued. Runs on start for a `code` in the
+   * URL; call it when the app takes the code from the URL itself. Its `error`
+   * holds a failed exchange.
+   */
+  readonly completeSignIn: Action<[code: string], Promise<boolean>> &
+    AsyncExt<[code: string], boolean>;
   /** Ends the session locally, even when `auth:signOut` fails. */
   readonly signOut: Action<[], Promise<void>>;
 };
@@ -164,7 +174,7 @@ export function reatomConvexAuthProvider(
       };
     }),
   );
-  const isLoading = atom(true, `${name}.isLoading`).extend(
+  const restoring = atom(true, `${name}._restoring`).extend(
     withConnectHook(() => {
       void start();
     }),
@@ -186,7 +196,7 @@ export function reatomConvexAuthProvider(
 
   const apply = (value: string | null) => {
     token.set(value);
-    isLoading.set(false);
+    restoring.set(false);
   };
   const store = async (tokens: Tokens | null) => {
     await write(JWT_KEY, tokens?.token ?? null);
@@ -251,6 +261,16 @@ export function reatomConvexAuthProvider(
     `${name}.signIn`,
   );
 
+  const completeSignIn = action(async (code: string) => {
+    const { signingIn } = await wrap(signIn(undefined, { code }));
+    return signingIn;
+  }, `${name}.completeSignIn`).extend(withAsync());
+
+  const isLoading = computed(
+    () => restoring() || !completeSignIn.ready(),
+    `${name}.isLoading`,
+  );
+
   const signOut = action(async () => {
     try {
       await wrap(convex.action(signOutRef, {}));
@@ -308,9 +328,11 @@ export function reatomConvexAuthProvider(
         )(url.pathname + url.search + url.hash),
       );
       try {
-        await wrap(signIn(undefined, { code }));
+        await wrap(completeSignIn(code));
+      } catch {
+        // Kept in `completeSignIn.error()`.
       } finally {
-        isLoading.set(false);
+        restoring.set(false);
       }
       return;
     }
@@ -348,6 +370,7 @@ export function reatomConvexAuthProvider(
     token,
     isRefreshingToken,
     signIn,
+    completeSignIn,
     signOut,
   };
 }
