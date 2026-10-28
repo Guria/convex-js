@@ -12,6 +12,12 @@ export type {
   Transition,
 } from "./client.js";
 export type { AuthTokenFetcher } from "./auth.js";
+export { reatomAuthState } from "./auth_state.js";
+export type {
+  AuthProvider,
+  AuthStatus,
+  ReatomAuthState,
+} from "./auth_state.js";
 export type { PaginatedQueryState, ReatomPaginatedQuery } from "./paginated.js";
 export type { SocketState } from "./socket.js";
 export type { OptimisticLocalStore } from "convex/browser";

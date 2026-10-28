@@ -486,3 +486,13 @@ export const clientOptions = (server: FakeServer) => ({
   unsavedChangesWarning: false,
   logger: false as const,
 });
+
+/** An unsigned JWT with an hour-long lifetime. */
+export const jwt = (claims: Record<string, unknown>) =>
+  [
+    Buffer.from('{"alg":"none"}').toString("base64url"),
+    Buffer.from(JSON.stringify({ iat: 1, exp: 3601, ...claims })).toString(
+      "base64url",
+    ),
+    "sig",
+  ].join(".");
