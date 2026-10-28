@@ -128,6 +128,28 @@ test("shares one request among unforced fetches", async () => {
   expect(await Promise.all(tokens)).toEqual(["t1", "t1"]);
 });
 
+test("another session drops the cached token", async () => {
+  const frame = context.start();
+  const fake = fakeClient();
+  const provider = reatomBetterAuthProvider(fake.client);
+  frame.run(() => provider.session.subscribe(noop));
+  await settle();
+  fake.setSession({ data: { session: { id: "s1" } }, isPending: false });
+  const first = frame.run(() =>
+    provider.fetchToken({ forceRefreshToken: false }),
+  );
+  fake.tokenRequests.shift()!("alice");
+  expect(await first).toBe("alice");
+
+  fake.setSession({ data: { session: { id: "s2" } }, isPending: false });
+  const second = frame.run(() =>
+    provider.fetchToken({ forceRefreshToken: false }),
+  );
+  expect(fake.tokenRequests).toHaveLength(1);
+  fake.tokenRequests.shift()!("bob");
+  expect(await second).toBe("bob");
+});
+
 test("an initial token stands in until the session loads", async () => {
   const frame = context.start();
   const fake = fakeClient();

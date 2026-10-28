@@ -129,8 +129,12 @@ export function reatomBetterAuthProvider<Client extends BetterAuthClient>(
       void start();
       return authClient.useSession.subscribe(
         wrap((value: SessionState) => {
+          const previous = peek(target).data?.session?.id;
           target.set(value as ReturnType<Client["useSession"]["get"]>);
-          if (!value.data && !value.isPending) token.set(null);
+          if (value.isPending) return;
+          // The cached token belongs to the previous session, or to none.
+          const id = value.data?.session?.id;
+          if (!id || (previous && id !== previous)) token.set(null);
         }),
       );
     }),
