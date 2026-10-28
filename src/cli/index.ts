@@ -32,8 +32,7 @@ async function main() {
 
   // Increase the timeout from default 250ms for high latency situations,
   // see https://github.com/nodejs/node/issues/54359.
-  // While we use Node.js v18 types
-  (net as any).setDefaultAutoSelectFamilyAttemptTimeout?.(1000);
+  net.setDefaultAutoSelectFamilyAttemptTimeout?.(1000);
 
   initSentry();
 
