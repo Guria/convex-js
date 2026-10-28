@@ -55,6 +55,62 @@ gets its own connection. The socket opens on first use in a context.
 There are no React hooks. Read the atoms through your Reatom view binding, such
 as `@reatom/react` or `@reatom/jsx`.
 
+## Auth
+
+`reatomAuthState(convex, provider)` does what convex/react's
+`ConvexProviderWithAuth` and `useConvexAuth` do. An auth library reports whether
+it is loading and who is signed in, `reatomAuthState` sends that session's
+token, and its `status` turns `authenticated` once the server accepts the token.
+`status` is `loading`, `unauthenticated`, `authenticated` or `rejected`;
+`isLoading`, `isAuthenticated` and `isRefreshing` are atoms too. The client
+follows the provider while one of these atoms has a subscriber, so subscribe to
+one at the root of the app.
+
+Two entry points build the provider from an auth library:
+
+```ts
+// Convex Auth (@convex-dev/auth)
+import { reatomConvexAuthProvider } from "@reatomized/convex/convex-auth";
+
+const convexAuth = reatomConvexAuthProvider(convex);
+const auth = reatomAuthState(convex, convexAuth);
+await convexAuth.signIn("password", { email, password, flow: "signIn" });
+await convexAuth.signIn("github"); // navigates to GitHub
+await convexAuth.signOut();
+```
+
+`reatomConvexAuthProvider` implements the client side of `@convex-dev/auth`,
+whose own client is a React provider. It uses the same storage keys, so sessions
+carry over from `@convex-dev/auth/react`. On start it signs in with a `code`
+from the URL, and it refreshes the token once across tabs.
+
+```ts
+// Better Auth with @convex-dev/better-auth
+import { reatomBetterAuthProvider } from "@reatomized/convex/better-auth";
+import {
+  convexClient,
+  crossDomainClient,
+} from "@convex-dev/better-auth/client/plugins";
+import { createAuthClient } from "better-auth/client";
+
+const authClient = createAuthClient({
+  baseURL: import.meta.env.VITE_CONVEX_SITE_URL,
+  plugins: [convexClient(), crossDomainClient()],
+});
+const auth = reatomAuthState(convex, reatomBetterAuthProvider(authClient));
+await authClient.signIn.email({ email, password });
+```
+
+Better Auth's client works without a framework, so you sign in through it;
+`reatomBetterAuthProvider` follows its session store, fetches Convex tokens, and
+trades the `ott` one-time token from a cross-domain OAuth redirect for the
+session. Neither entry point adds dependencies.
+
+For another library, pass any object with `isLoading` and `session` atoms and a
+`fetchToken` function. `session` should change when the identity does, such as a
+user or organization id. Pass an atom of providers to switch libraries at
+runtime.
+
 ## Node
 
 With `@reatom/core@1001.3.0` loaded, Node never exits on its own, so a script

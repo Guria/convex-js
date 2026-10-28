@@ -26,6 +26,9 @@ mise exec dprint@0.51.1 -- dprint check
 | Path                                           | Holds                                                                                     |
 | ---------------------------------------------- | ----------------------------------------------------------------------------------------- |
 | `src/browser/reatom/index.ts`                  | The package's exports                                                                     |
+| `src/browser/reatom/auth_state.ts`             | An auth library's session joined with the server's answer, `reatomAuthState`              |
+| `src/browser/reatom/convex_auth.ts`            | The `convex-auth` entry: Convex Auth's client protocol                                    |
+| `src/browser/reatom/better_auth.ts`            | The `better-auth` entry: a Better Auth client's session and Convex tokens                 |
 | `src/browser/reatom/socket.ts`                 | WebSocket state machine, backoff, pauses for auth, inactivity, chunked transitions        |
 | `src/browser/reatom/auth.ts`                   | Token fetch, server confirmation, scheduled refetch, reauthentication                     |
 | `src/browser/reatom/client.ts`                 | Query entries, query set and identity versions, requests, optimistic updates, transitions |
@@ -50,11 +53,11 @@ weakly, so an unused entry can be collected.
 
 ## Build
 
-`tsconfig.build.json` names `src/browser/reatom/index.ts` as its only entry.
-TypeScript follows the modules it imports and writes JavaScript and declarations
-to `dist/`; tests and the upstream reference client are not build entries.
-`scripts/build.mjs` clears `dist/`, runs that compilation, and copies vendored
-licenses next to their emitted modules. There is no staging directory.
+`tsconfig.build.json` names the sources of the `exports` in `package.json` as
+its entries. TypeScript follows the modules it imports and writes JavaScript and
+declarations to `dist/`; tests and the upstream reference client are not build
+entries. `scripts/build.mjs` clears `dist/`, runs that compilation, and copies
+vendored licenses next to their emitted modules. There is no staging directory.
 
 Typecheck and build resolve public Convex imports against the pinned dev
 version. They fail if this client or an upstream helper imports a symbol the
@@ -73,6 +76,9 @@ the differences the README lists.
 
 `src/browser/reatom/client.test.ts` covers the Reatom API. Its function
 references and `ConvexError` assertions come from the public `convex` package.
+`auth_state.test.ts`, `convex_auth.test.ts` and `better_auth.test.ts` run the
+auth state and both auth library providers against the scripted server; Convex
+Auth's HTTP exchanges and the Better Auth client are fakes.
 `node scripts/source-audit.mjs` lists the package's import graph, test-only
 sources, and any unused sources. Its tests require no unused files and keep the
 upstream reference clients and their managers out of the package graph.
