@@ -1,4 +1,4 @@
-// Classify local sources by the package entry and test entry points.
+// Classify local sources by the package entries and test entry points.
 import fs from "fs";
 import path from "path";
 import process from "process";
@@ -47,7 +47,13 @@ export function auditSources() {
     }
     return seen;
   };
-  const runtime = closure([path.join(root, "src/browser/reatom/index.ts")]);
+  const build = ts.readConfigFile(
+    path.join(root, "tsconfig.build.json"),
+    ts.sys.readFile,
+  );
+  const runtime = closure(
+    build.config.files.map((file) => path.join(root, file)),
+  );
   const tests = closure(sources.filter((file) => file.endsWith(".test.ts")));
   const relative = (files) =>
     [...files].map((file) => path.relative(root, file)).sort();

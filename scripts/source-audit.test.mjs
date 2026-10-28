@@ -40,8 +40,14 @@ test("server and values come from public peer exports, not copies or deep import
   ]);
 });
 
-test("the production build starts at the package entry, not the test tree", () => {
+test("the production build starts at the package entries, not the test tree", () => {
   const config = JSON.parse(fs.readFileSync("tsconfig.build.json", "utf8"));
-  expect(config.files).toEqual(["src/browser/reatom/index.ts"]);
+  const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+  const entries = Object.entries(pkg.exports)
+    .filter(([subpath]) => subpath !== "./package.json")
+    .map(([, target]) =>
+      target.default.replace(/^\.\/dist\//, "src/").replace(/\.js$/, ".ts"),
+    );
+  expect(config.files).toEqual(entries);
   expect(config.include).toBeUndefined();
 });

@@ -25,6 +25,10 @@
       "types": "./dist/browser/reatom/index.d.ts",
       "default": "./dist/browser/reatom/index.js"
     },
+    "./convex-auth": {
+      "types": "./dist/browser/reatom/convex_auth.d.ts",
+      "default": "./dist/browser/reatom/convex_auth.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
