@@ -8,6 +8,11 @@
   to the latest version.
 - This version drops support for Node.js 20. Please update to Node.js 22 or
   newer.
+- Adds the `v.function({ fnType, args, returns })` validator, which validates
+  that a value is a well-formed function handle. You can specify `fnType`,
+  `args`, and `returns` for TypeScript typechecking and including type
+  signatures in codegen, but they are not checked when running functions or
+  writing to a table at runtime.
 
 ## 1.48.0
 
