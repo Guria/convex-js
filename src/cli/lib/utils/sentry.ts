@@ -1,4 +1,3 @@
-import "@sentry/tracing";
 import { productionProvisionHost, provisionHost } from "../config.js";
 import * as Sentry from "@sentry/node";
 import { version } from "../../../index.js";
