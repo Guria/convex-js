@@ -409,6 +409,8 @@ export interface components {
             createTime: number;
             prodDeploymentName?: string | null;
             devDeploymentName?: string | null;
+            prodDeploymentReference?: string | null;
+            devDeploymentReference?: string | null;
             tags: string[];
         };
         /** @description Summary of a project WorkOS environment for list responses - slimmer than
