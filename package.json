@@ -331,6 +331,7 @@
     "openapi-typescript-helpers": "~0.1.0",
     "openid-client": "^5.3.1",
     "ora": "^9.0.0",
+    "pkg-pr-new": "0.0.91",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "semver": "^7.6.0",
