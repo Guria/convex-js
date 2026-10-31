@@ -49,13 +49,13 @@
   },
   "peerDependencies": {
     "@reatom/core": "^1001.3.0",
-    "convex": "^1.48.0"
+    "convex": "^1.49.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.0",
     "@reatom/core": "https://pkg.pr.new/@reatom/core@5f42184",
     "@types/node": "^24.0.0",
-    "convex": "1.48.0",
+    "convex": "1.49.0",
     "eslint": "^9.39.0",
     "globals": "^17.4.0",
     "happy-dom": "^20.10.0",
